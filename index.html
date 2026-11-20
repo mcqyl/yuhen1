@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>余痕 · Remnants</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<canvas id="gl"></canvas>
+<div id="vignette"></div>
+
+<!-- 拾取提示 / 碎片名 -->
+<div id="hud">
+  <div id="hud-name"></div>
+  <div id="hud-prompt"><kbd>E</kbd><span>捡起</span></div>
+  <div id="hud-carry"><span class="dot"></span><span id="hud-carry-name"></span><em>E 放下</em></div>
+  <div id="hud-stage"></div>
+  <div id="hud-hint">
+    <span>W / S 前后</span><span>A / D 侧移</span><span>鼠标 转头</span><span>空格 攀上</span><span>E 拾取 · 放下</span>
+  </div>
+</div>
+
+<!-- 回忆动画层 -->
+<div id="film-wrap">
+  <canvas id="film"></canvas>
+  <div class="letterbox top"></div>
+  <div class="letterbox bottom"></div>
+  <div id="film-progress"><i></i></div>
+</div>
+
+<!-- 标题 -->
+<div id="title" class="overlay">
+  <div class="title-bg"></div>
+  <div class="title-inner">
+    <div class="title-mark">余 痕</div>
+    <div class="title-sub">Remnants &nbsp;/&nbsp; 一段被雾分作三层存放的往事</div>
+    <p class="title-copy">这里没有路线，也没有必须做的事。<br>你可以走完，也可以什么都不捡。</p>
+    <button id="btn-enter">走进雾里</button>
+    <div class="title-keys">W S A D 移动 · 鼠标转头 · 空格 攀爬 · E 拾取 / 放下 · Esc 释放鼠标</div>
+  </div>
+</div>
+
+<!-- 第二章提示 / 通用淡入文字 -->
+<div id="flash" class="overlay-text"></div>
+
+<!-- 结局 -->
+<div id="ending" class="overlay hidden">
+  <canvas id="ending-cv"></canvas>
+  <div class="ending-card">
+    <div id="ending-kicker"></div>
+    <h1 id="ending-title"></h1>
+    <p id="ending-line"></p>
+    <div id="ending-stat"></div>
+    <button id="btn-again">再走一次</button>
+  </div>
+</div>
+
+<div id="loading">正在显影…</div>
+
+<script src="js/three.min.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/memory.js"></script>
+<script src="js/world.js"></script>
+<script src="js/player.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

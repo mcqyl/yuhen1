@@ -18,11 +18,14 @@
   var ui = {};
   var handLight = null;
   var endingDone = false;
+  var post = null;
+  var quality = 'high';
+  var perfAcc = 0, perfFrames = 0, perfLock = false;
 
   var STAGE_TEXT = [
-    { t: '第 一 段', s: '雾很薄，光还是暖的' },
-    { t: '第 二 段', s: '雾厚了一些，说话开始变少' },
-    { t: '第 三 段', s: '雾最浓的地方，有些东西被放在这里' },
+    { t: '第 一 段', s: '灶台还是热的，巷子里总有白汽' },
+    { t: '第 二 段', s: '雾厚了一点，有些话开始没人说' },
+    { t: '第 三 段', s: '雾最浓的地方，什么都快看不见了' },
     { t: '', s: '' }
   ];
 
@@ -30,22 +33,28 @@
 
   function init() {
     var canvas = $('gl');
-    renderer = new T.WebGLRenderer({ canvas: canvas, antialias: true, powerPreference: 'high-performance' });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.8));
+    renderer = new T.WebGLRenderer({ canvas: canvas, antialias: false, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = T.PCFSoftShadowMap;
-    renderer.toneMapping = T.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 0.95;
+    // 色调映射交给后处理（场景缓冲保持线性 HDR）
+    renderer.toneMapping = T.NoToneMapping;
     if ('outputColorSpace' in renderer) renderer.outputColorSpace = T.SRGBColorSpace;
 
     camera = new T.PerspectiveCamera(66, window.innerWidth / window.innerHeight, 0.06, 900);
     camera.rotation.order = 'YXZ';
     camera.position.set(0, 1.62, 48);
 
+    // 画质档位（?q=low|med|high 可强制）
+    var qp = (location.search.match(/[?&]q=(low|med|high)/) || [])[1];
+    if (qp) quality = qp;
+
     var built = world.build(renderer);
     scene = built.scene;
     scene.add(camera);
+
+    post = YH.Post.init(renderer);
 
     // 手持物品补光
     handLight = new T.PointLight(0xffe4bb, 0.45, 2.2, 2);
@@ -60,6 +69,7 @@
     player.onClimb = function () { audio.climb(); };
 
     world.setStage(0, true);
+    applyQuality(quality);
 
     ui.title = $('title');
     ui.flash = $('flash');
@@ -75,6 +85,18 @@
     ui.ending = $('ending');
     ui.loading = $('loading');
 
+    var qbtns = document.querySelectorAll('.title-quality button');
+    Array.prototype.forEach.call(qbtns, function (b) {
+      if (b.getAttribute('data-q') === quality) b.classList.add('on');
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        Array.prototype.forEach.call(qbtns, function (x) { x.classList.remove('on'); });
+        b.classList.add('on');
+        perfLock = true;
+        applyQuality(b.getAttribute('data-q'));
+      });
+    });
+
     $('btn-enter').addEventListener('click', enterGame);
     $('btn-again').addEventListener('click', function () { location.reload(); });
 
@@ -83,7 +105,8 @@
     window.addEventListener('resize', onResize);
 
     // 进入前先渲染一帧
-    renderer.render(scene, camera);
+    renderer.setRenderTarget(null);
+    post.renderOnce(scene, camera);
     ui.loading.classList.add('done');
 
     requestAnimationFrame(loop);
@@ -102,7 +125,7 @@
     state = 'play';
     stage = 0;
     world.setStage(0);
-    setTimeout(function () { showFlash('第一段\n雾很薄，光还是暖的', 3400); }, 1200);
+    setTimeout(function () { showFlash('第一段\n灶台还是热的，巷子里总有白汽', 3400); }, 1200);
     setTimeout(function () { ui.hint.classList.add('hide'); }, 22000);
     var canvas = $('gl');
     if (canvas.requestPointerLock) canvas.requestPointerLock();
@@ -111,7 +134,39 @@
   function onResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
+    applyQuality(quality, true);
+  }
+
+  /* ---------------- 画质 ---------------- */
+
+  var Q_DPR = { high: 1.75, med: 1.3, low: 1.0 };
+  var Q_SHADOW = { high: 4096, med: 2048, low: 1024 };
+
+  function applyQuality(q, resizing) {
+    if (!renderer) return;
+    quality = q;
+    var dpr = Math.min(window.devicePixelRatio || 1, Q_DPR[q] || 1.3);
+    renderer.setPixelRatio(dpr);
     renderer.setSize(window.innerWidth, window.innerHeight);
+    if (post && !resizing) post.setQuality(q);
+    else if (post) post.setSize(window.innerWidth, window.innerHeight, dpr);
+    if (world.setGrassQuality) world.setGrassQuality(q);
+    if (world.sun) {
+      var size = Q_SHADOW[q] || 2048;
+      if (world.sun.shadow.mapSize.x !== size) {
+        world.sun.shadow.mapSize.set(size, size);
+        if (world.sun.shadow.map) {
+          world.sun.shadow.map.dispose();
+          world.sun.shadow.map = null;
+        }
+      }
+    }
+    var lab = document.querySelector('.title-quality');
+    if (lab) {
+      Array.prototype.forEach.call(lab.querySelectorAll('button'), function (b) {
+        b.classList.toggle('on', b.getAttribute('data-q') === q);
+      });
+    }
   }
 
   /* ---------------- 输入 ---------------- */
@@ -259,6 +314,7 @@
   function checkStage() {
     var z = player.pos.z;
     var s = world.stageOf(z);
+    window.__cs = { z: z, s: s, stage: stage };
     if (s > stage) {
       stage = s;
       world.setStage(Math.min(3, s));
@@ -299,12 +355,12 @@
     document.exitPointerLock && document.exitPointerLock();
 
     var s3 = seenCount(2);
-    var truth = world.fragments.some(function (f) { return f.truth && f.seen; });
-    var kind = (s3 >= 3 && truth) ? 2 : 1;
     var total = 0;
     world.fragments.forEach(function (f) { if (f.seen) total++; });
+    // 全捡齐 -> 雾散；什么都没捡 -> 空的草地；中间 -> 薄雾还在
+    var kind = total >= world.fragments.length ? 2 : (total === 0 ? 0 : 1);
 
-    audio.setStage(kind === 2 ? 3 : 2);
+    audio.setStage(kind === 2 ? 3 : (kind === 0 ? 1 : 2));
     audio.ending(kind);
 
     ui.ending.classList.remove('hidden');
@@ -314,11 +370,14 @@
 
     mem.playEnding(kind, { total: total }).then(function () {
       var card = ui.ending.querySelector('.ending-card');
-      $('ending-kicker').textContent = kind === 2 ? 'ENDING 02 / 雾散之后' : 'ENDING 01 / 薄雾还在';
-      $('ending-title').textContent = kind === 2 ? '雾散了' : '雾没有散';
+      $('ending-kicker').textContent = kind === 2 ? 'ENDING 03 / 雾散之后'
+        : kind === 0 ? 'ENDING 01 / 什么也没带走' : 'ENDING 02 / 薄雾还在';
+      $('ending-title').textContent = kind === 2 ? '雾散了' : kind === 0 ? '草地是空的' : '雾没有散';
       $('ending-line').textContent = kind === 2
-        ? '暖是真的，疼也是真的。\n你没有原谅谁，只是把这件事完整地看完了。\n然后你继续往前走。'
-        : '你只把记得的那一点暖收好了。\n雾停在原来的地方，不浓也不淡。\n那些没看的，还在那里。';
+        ? '碗底的荷包蛋、烫手的油纸袋、洇开的红字、\n那句骗了你一辈子的“我不饿”。\n你都看完了，也没有替谁原谅谁。\n风把叶子吹到脚边，你踩了一脚，继续往前走。'
+        : kind === 0
+          ? '你什么都没有捡。\n草地上很轻，轻得像什么都没发生过。\n雾一直在，你也一直往前走。'
+          : '你只把记得的那一点暖收好了。\n雾停在原来的地方，不浓也不淡。\n那些没看的，还在那里。';
       $('ending-stat').textContent = '看过 ' + total + ' / 13 段回忆　·　第三段 ' + seenCount(2) + ' 段';
       card.classList.add('on');
     });
@@ -328,6 +387,7 @@
 
   function loop(t) {
     requestAnimationFrame(loop);
+    window.__f = (window.__f | 0) + 1; window.__st = state;
     var now = t / 1000;
     var dt = lastT ? Math.min(0.05, now - lastT) : 0.016;
     lastT = now;
@@ -366,7 +426,21 @@
 
     // 回忆片/结局期间，3D 画面被完全遮住，省下 GPU
     if (state !== 'film' && state !== 'ending') {
-      renderer.render(scene, camera);
+      var sp = world.sunPos && world.sunPos();
+      if (sp) post.setSun(sp, camera);
+      post.render(scene, camera, dt, now);
+    }
+
+    // 帧率兜底：掉帧会自动降一档
+    if (!perfLock && state === 'play') {
+      perfAcc += dt;
+      perfFrames++;
+      if (perfAcc > 2.4) {
+        var avgMs = (perfAcc / perfFrames) * 1000;
+        if (avgMs > 27 && quality === 'high') { applyQuality('med'); perfLock = true; }
+        else if (avgMs > 30 && quality === 'med') { applyQuality('low'); perfLock = true; }
+        perfAcc = 0; perfFrames = 0;
+      }
     }
   }
 
@@ -386,6 +460,9 @@
     stage: function (s) { stage = s; world.setStage(s, true); },
     seenAll: function () { world.fragments.forEach(function (f) { f.seen = true; seen[f.id] = true; }); },
     state: function () { return { state: state, stage: stage, pos: player.pos.clone(), carried: carried && carried.name }; },
-    cam: function () { return { yaw: player.yaw, pitch: player.pitch }; }
+    cam: function () { return { yaw: player.yaw, pitch: player.pitch }; },
+    quality: function (q) { perfLock = true; applyQuality(q); return quality; },
+    view: function (yaw, pitch) { player.yaw = yaw; if (pitch != null) player.pitch = pitch; },
+    stats: function () { return { calls: renderer.info.render.calls, tris: renderer.info.render.triangles, geos: renderer.info.memory.geometries, tex: renderer.info.memory.textures }; }
   };
 })(window.YH = window.YH || {});

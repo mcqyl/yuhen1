@@ -1035,6 +1035,24 @@
     g.scale(z, z);
     g.translate(-W / 2, -H / 2);
     fn(g, W, H, p, tAbs, opt);
+    if (shot.line) filmLine(g, shot.line, p);
+    g.restore();
+  }
+
+  // 镜头里偶尔浮出的一句话：淡入、停住、淡出，不做字幕条
+  function filmLine(g, text, p) {
+    var a = clamp((p - 0.18) * 5, 0, 1) * clamp((1 - p) * 5.5, 0, 1);
+    if (a <= 0.01) return;
+    var sz = Math.max(15, Math.min(34, H * 0.030));
+    g.save();
+    g.globalAlpha = a * 0.88;
+    g.font = '300 ' + sz + 'px "Songti SC","STSong","SimSun",serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.shadowColor = 'rgba(0,0,0,.55)';
+    g.shadowBlur = sz * 0.7;
+    g.fillStyle = 'rgba(248,241,226,.94)';
+    g.fillText(text, W / 2, H * 0.845);
     g.restore();
   }
 
@@ -1146,11 +1164,13 @@
       c.style.height = H2 + 'px';
 
       var start = performance.now();
-      var dur = kind === 2 ? 14 : 12;
+      var dur = kind === 2 ? 14 : (kind === 0 ? 11 : 12);
       var rand = mulberry32(kind === 2 ? 8891 : 4477);
       var pal = kind === 2
         ? { sky: ['#eaf0f2', '#e6dcc6', '#c9b08a'], ground: '#a8a680', ink: '#332e26', glow: '#fff8e6', mist: '#f0e8d6' }
-        : { sky: ['#d2d5cf', '#b6bbb5', '#8f958f'], ground: '#8e948c', ink: '#2e322d', glow: '#eae6d8', mist: '#c6cac3' };
+        : kind === 0
+          ? { sky: ['#e4e5df', '#d6d8d0', '#b9bcb4'], ground: '#a8aba1', ink: '#3a3d38', glow: '#f4f2e6', mist: '#dcded6' }
+          : { sky: ['#d2d5cf', '#b6bbb5', '#8f958f'], ground: '#8e948c', ink: '#2e322d', glow: '#eae6d8', mist: '#c6cac3' };
 
       function frame(now) {
         var t = (now - start) / 1000;
@@ -1159,7 +1179,9 @@
         g.clearRect(0, 0, W2, H2);
 
         var hy = H2 * 0.62;
-        var fogK = kind === 2 ? clamp(1 - p * 2.4, 0.02, 1) : clamp(0.82 + Math.sin(p * Math.PI) * 0.1, 0.5, 1);
+        var fogK = kind === 2 ? clamp(1 - p * 2.4, 0.02, 1)
+          : kind === 0 ? clamp(0.30 + Math.sin(p * Math.PI) * 0.06, 0.2, 0.5)
+          : clamp(0.82 + Math.sin(p * Math.PI) * 0.1, 0.5, 1);
         wash(g, W2, H2, pal, rand, 0.38);
         // 结局二：雾散后露出的低太阳
         if (kind === 2) {
@@ -1177,7 +1199,11 @@
           g.restore();
         }
         treeline(g, W2, H2, hy + 2, pal, rand, { alpha: kind === 2 ? 0.18 : 0.16, n: 22, blur: 2 });
-        groundPlane(g, W2, H2, hy, pal, rand, { mistAlpha: (kind === 2 ? 0.10 + 0.65 * fogK : 0.72), tint: kind === 2 ? '#9aa06a' : '#8b918a', tintAlpha: kind === 2 ? 0.34 : 0.2 });
+        groundPlane(g, W2, H2, hy, pal, rand, {
+          mistAlpha: kind === 2 ? 0.10 + 0.65 * fogK : (kind === 0 ? 0.34 : 0.72),
+          tint: kind === 2 ? '#9aa06a' : '#8b918a',
+          tintAlpha: kind === 2 ? 0.34 : (kind === 0 ? 0.10 : 0.2)
+        });
 
         for (var i = 0; i < 7; i++) {
           var fx = ((i * 0.21 + t * 0.011) % 1.2 - 0.1) * W2;
@@ -1227,6 +1253,15 @@
           var walkK = clamp((p - 0.18) / 0.72, 0, 1);
           person(g, W2 * 0.50 + walkK * W2 * 0.02, H2 * 0.905 - walkK * H2 * 0.11, H2 * (0.40 - walkK * 0.22), t * 3.0,
             { ink: pal.ink, alpha: 0.72 - walkK * 0.42, hair: 'long' });
+        } else if (kind === 0) {
+          // 空结局：草地上什么都没有，风也是轻的
+          g.save();
+          g.globalCompositeOperation = 'screen';
+          var eg = g.createRadialGradient(W2 * 0.5, hy - H2 * 0.10, 0, W2 * 0.5, hy - H2 * 0.10, H2 * 0.9);
+          eg.addColorStop(0, 'rgba(252,250,240,' + (0.28 + 0.10 * Math.sin(t * 0.7)) + ')');
+          eg.addColorStop(1, 'rgba(252,250,240,0)');
+          g.fillStyle = eg; g.fillRect(0, 0, W2, H2);
+          g.restore();
         } else {
           var breathe = Math.sin(t * 0.9) * 0.004;
           person(g, W2 * 0.5, H2 * 0.93, H2 * (0.42 + breathe), 0, { ink: pal.ink, still: true, alpha: 0.82, hair: 'long' });
@@ -1290,6 +1325,18 @@
       grain(g, w, hh, 0.14);
       vignette(g, w, hh, 1);
     }
+  };
+
+  // 第二个场景文件（memory2.js）往这里注册新镜头，绘制方式与上面完全一致
+  F.registerScenes = function (map) {
+    for (var k in map) { if (map.hasOwnProperty(k)) SCENES[k] = map[k]; }
+  };
+
+  F.h = {
+    wash: wash, groundPlane: groundPlane, treeline: treeline, midTree: midTree,
+    person: person, dust: dust, rain: rain, grain: grain, vignette: vignette,
+    paperOverlay: paperOverlay, hexA: hexA, shade: shade,
+    rr: rr, lerp: lerp, clamp: clamp, ease: ease, TAU: TAU
   };
 
   F.init = function () {

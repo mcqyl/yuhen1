@@ -274,11 +274,21 @@
     var amp = walking ? 0.028 : 0.006;
     this.bob += ((walking ? Math.sin(this.bobPhase) : Math.sin(this.bobPhase * 0.5) * 0.35) * amp - this.bob) * Math.min(1, dt * 9);
     var cam = this.camera;
-    cam.position.set(this.pos.x, this.pos.y + this.eye + this.bob, this.pos.z);
+    var t = performance.now() * 0.001;
+    // 手持感：极缓慢的漂移 + 呼吸，让画面不像固定机位
+    var driftY = Math.sin(t * 0.21) * 0.0015 + Math.sin(t * 0.37 + 1.3) * 0.0007;
+    var driftX = Math.sin(t * 0.17 + 2.1) * 0.0011;
+    var breath = Math.sin(this.bobPhase * 0.5) * (walking ? 0.0026 : 0.0016);
+
+    cam.position.set(
+      this.pos.x + Math.sin(t * 0.29) * 0.006,
+      this.pos.y + this.eye + this.bob,
+      this.pos.z
+    );
     cam.rotation.order = 'YXZ';
-    cam.rotation.y = this.yaw;
-    cam.rotation.x = this.pitch;
-    cam.rotation.z = Math.sin(this.bobPhase * 0.5) * (walking ? 0.006 : 0.002);
+    cam.rotation.y = this.yaw + driftY;
+    cam.rotation.x = this.pitch + driftX + breath;
+    cam.rotation.z = Math.sin(this.bobPhase * 0.5) * (walking ? 0.011 : 0.003) + Math.sin(t * 0.23) * 0.0012;
   };
 
   /* 手持物：挂在相机前下方 */

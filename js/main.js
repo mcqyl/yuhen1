@@ -23,11 +23,14 @@
   var perfAcc = 0, perfFrames = 0, perfLock = false;
 
   var STAGE_TEXT = [
-    { t: '第 一 段', s: '灶台还是热的，巷子里总有白汽' },
-    { t: '第 二 段', s: '雾厚了一点，有些话开始没人说' },
-    { t: '第 三 段', s: '雾最浓的地方，什么都快看不见了' },
-    { t: '', s: '' }
+    { t: '童 年 区', s: '灶台还是热的，巷子里总有白汽' },
+    { t: '少 年 区', s: '光变得干净，走廊里的话却开始发凉' },
+    { t: '亲 情 与 失 去', s: '雾厚起来，医院的灯是白的' },
+    { t: '成 年 疏 离', s: '城市没熄灯，也没有一盏是为你亮的' },
+    { t: '终 章 区', s: '雾最薄的地方，一条路一直向前' },
+    { t: '回 忆 荒 原', s: '五片回忆，都从这里延伸出去' }
   ];
+  var visited = {};
 
   function $(id) { return document.getElementById(id); }
 
@@ -64,11 +67,11 @@
     mem.init();
 
     player = new YH.Player(camera, canvas, built.colliders);
-    player.reset(0, 0, 48, 0);
+    player.reset(0, 0, -20, Math.PI);
     player.onStep = function () { audio.step(false); };
     player.onClimb = function () { audio.climb(); };
 
-    world.setStage(0, true);
+    world.setStage(5, true);
     applyQuality(quality);
 
     ui.title = $('title');
@@ -115,7 +118,7 @@
   function enterGame() {
     audio.init();
     audio.resume();
-    audio.setStage(0);
+    audio.setStage(5);
     ui.title.style.transition = 'opacity 1.6s ease';
     ui.title.style.opacity = '0';
     setTimeout(function () {
@@ -123,10 +126,12 @@
       ui.title.style.opacity = '';
     }, 1700);
     state = 'play';
-    stage = 0;
-    world.setStage(0);
-    setTimeout(function () { showFlash('第一段\n灶台还是热的，巷子里总有白汽', 3400); }, 1200);
-    setTimeout(function () { ui.hint.classList.add('hide'); }, 22000);
+    stage = 5;
+    visited = {};
+    visited[5] = true;
+    world.setStage(5);
+    setTimeout(function () { showPlace('回 忆 荒 原', '指尖划开镜面的水汽之后，你站在这里'); }, 900);
+    setTimeout(function () { ui.hint.classList.add('hide'); }, 26000);
     var canvas = $('gl');
     if (canvas.requestPointerLock) canvas.requestPointerLock();
   }
@@ -187,7 +192,7 @@
     if (text) {
       if (promptMode !== text) {
         ui.promptLabel.textContent = text;
-        ui.promptKey.textContent = text === '攀上' ? '空格' : 'E';
+        ui.promptKey.textContent = (text === '攀上' || text === '要爬上去') ? '空格' : 'E';
         promptMode = text;
       }
       ui.prompt.classList.add('show');
@@ -204,6 +209,15 @@
     showName._t = setTimeout(function () { ui.name.classList.remove('show'); }, 4200);
   }
 
+  function showPlace(title, sub, ms) {
+    ui.stage.innerHTML = title + (sub ? '<small>' + sub + '</small>' : '');
+    ui.stage.style.transition = 'opacity 1.6s ease';
+    ui.stage.style.opacity = '0';
+    requestAnimationFrame(function () { ui.stage.style.opacity = '0.9'; });
+    clearTimeout(showPlace._t);
+    showPlace._t = setTimeout(function () { ui.stage.style.opacity = '0'; }, ms || 5200);
+  }
+
   function showFlash(text, ms) {
     ui.flash.textContent = text;
     ui.flash.style.opacity = '0';
@@ -214,7 +228,7 @@
 
   /* ---------------- 拾取 / 放下 ---------------- */
 
-  function nearestFragment() {
+  function nearestFragment(ignoreHeight) {
     var best = null, bestD = 2.35;
     var fwd = player.forward();
     for (var i = 0; i < world.fragments.length; i++) {
@@ -225,6 +239,8 @@
       var dy = f.holder.position.y - (player.pos.y + 1.1);
       var d = Math.sqrt(dx * dx + dz * dz);
       if (Math.abs(dy) > 1.7) continue;
+      // 高处的东西要先站上去：脚底离它太高就够不着
+      if (!ignoreHeight && f.holder.position.y - player.pos.y > 1.25) continue;
       if (d > bestD) continue;
       var dot = (dx * fwd.x + dz * fwd.z) / (d || 1);
       if (d > 0.9 && dot < 0.1) continue;
@@ -303,7 +319,8 @@
       f.home.set(px, sy + 0.06, pz);
       f.holder.position.copy(f.home);
     }
-    // 已经看过，仍然保留碎片，但不再触发动画
+    // 记录“放回原处 / 丢下”，结局判定要用
+    f.dropped = true;
     ui.carry.classList.remove('show');
     carried = null;
     audio.pickup(f.stage);
@@ -312,28 +329,16 @@
   /* ---------------- 阶段 ---------------- */
 
   function checkStage() {
-    var z = player.pos.z;
-    var s = world.stageOf(z);
-    window.__cs = { z: z, s: s, stage: stage };
-    if (s > stage) {
+    var s = world.stageAt(player.pos.x, player.pos.z);
+    window.__cs = { x: +player.pos.x.toFixed(1), z: +player.pos.z.toFixed(1), s: s, stage: stage };
+    if (s !== stage) {
       stage = s;
-      world.setStage(Math.min(3, s));
-      audio.setStage(Math.min(2, s));
-      var txt = STAGE_TEXT[Math.min(3, s)];
-      if (txt.t) showFlash(txt.t + '\n' + txt.s, 4200);
-      // 手里拿着东西跨段：留在那边
-      if (carried) {
-        var f = carried;
-        camera.remove(f.mesh);
-        ui.carry.classList.remove('show');
-        f.holder.add(f.mesh);
-        f.mesh.position.set(0, 0, 0);
-        f.mesh.rotation.set(0, f.def.rot || 0, 0);
-        f.mesh.scale.setScalar(f.def.scale || 1);
-        f.holder.position.copy(f.home);
-        f.holder.visible = true;
-        carried = null;
-        setTimeout(function () { showName('东西留在了雾那边'); }, 1400);
+      world.setStage(s);
+      audio.setStage(s);
+      if (!visited[s]) {
+        visited[s] = true;
+        var txt = STAGE_TEXT[s] || STAGE_TEXT[5];
+        showPlace(txt.t, txt.s);
       }
     }
   }
@@ -354,31 +359,41 @@
     setPrompt(null);
     document.exitPointerLock && document.exitPointerLock();
 
-    var s3 = seenCount(2);
-    var total = 0;
-    world.fragments.forEach(function (f) { if (f.seen) total++; });
-    // 全捡齐 -> 雾散；什么都没捡 -> 空的草地；中间 -> 薄雾还在
-    var kind = total >= world.fragments.length ? 2 : (total === 0 ? 0 : 1);
+    var all = world.fragments.length;
+    var total = 0, dropped = 0;
+    world.fragments.forEach(function (f) {
+      if (f.seen) total++;
+      if (f.dropped) dropped++;
+    });
 
-    audio.setStage(kind === 2 ? 3 : (kind === 0 ? 1 : 2));
-    audio.ending(kind);
+    // 结局分支（按《地图与动画设计方案》）：
+    // 0 什么都没捡 → 空白；1 全部看过且空手 → 放下；2 全部看过且手里还留着 → 释然
+    var kind = total === 0 ? 0
+      : (total >= all ? (carried ? 2 : 1) : 3);
+
+    audio.setStage(6);
+    audio.ending(kind === 2 ? 2 : 0);
 
     ui.ending.classList.remove('hidden');
     ui.ending.style.opacity = '0';
     ui.ending.style.transition = 'opacity 1.8s ease';
     requestAnimationFrame(function () { ui.ending.style.opacity = '1'; });
 
-    mem.playEnding(kind, { total: total }).then(function () {
+    mem.playEnding(kind, { total: total, dropped: dropped }).then(function () {
       var card = ui.ending.querySelector('.ending-card');
       $('ending-kicker').textContent = kind === 2 ? 'ENDING 03 / 雾散之后'
-        : kind === 0 ? 'ENDING 01 / 什么也没带走' : 'ENDING 02 / 薄雾还在';
-      $('ending-title').textContent = kind === 2 ? '雾散了' : kind === 0 ? '草地是空的' : '雾没有散';
+        : kind === 1 ? 'ENDING 02 / 我看过了，也放下了'
+          : kind === 0 ? 'ENDING 01 / 什么也没带走' : 'ENDING 04 / 薄雾还在';
+      $('ending-title').textContent = kind === 2 ? '雾散了'
+        : kind === 1 ? '空着手' : kind === 0 ? '草地是空的' : '雾没有散';
       $('ending-line').textContent = kind === 2
-        ? '碗底的荷包蛋、烫手的油纸袋、洇开的红字、\n那句骗了你一辈子的“我不饿”。\n你都看完了，也没有替谁原谅谁。\n风把叶子吹到脚边，你踩了一脚，继续往前走。'
-        : kind === 0
-          ? '你什么都没有捡。\n草地上很轻，轻得像什么都没发生过。\n雾一直在，你也一直往前走。'
-          : '你只把记得的那一点暖收好了。\n雾停在原来的地方，不浓也不淡。\n那些没看的，还在那里。';
-      $('ending-stat').textContent = '看过 ' + total + ' / 13 段回忆　·　第三段 ' + seenCount(2) + ' 段';
+        ? '碗底的荷包蛋、烫手的油纸袋、洇开的红字、\n那句骗了你一辈子的“我不饿”。\n你把它们一块一块捡起来，也没有替谁原谅谁。\n风把叶子吹到脚边，你踩了一脚，带着它们继续往前走。'
+        : kind === 1
+          ? '你把每一块都看完了，然后一块一块放回草里。\n雾散开的时候没有强光，路只是比来时清楚了一点。\n空着手往前走，不欠谁，也不再欠自己。'
+          : kind === 0
+            ? '你什么都没有捡。\n草地上很轻，轻得像什么都没发生过。\n雾一直在，你也一直往前走。'
+            : '你只看了一部分，就往前走了。\n雾停在原来的地方，不浓也不淡。\n那些没看的，还在那里。';
+      $('ending-stat').textContent = '看过 ' + total + ' / ' + all + ' 段回忆　·　放下 ' + dropped + ' 块';
       card.classList.add('on');
     });
   }
@@ -406,11 +421,12 @@
           var f = nearestFragment();
           promptTarget = f;
           if (f) setPrompt('捡起');
+          else if (nearestFragment(true)) setPrompt('要爬上去');
           else if (player.findLedge()) setPrompt('攀上');
           else setPrompt(null);
         }
-        // 走到草地深处，结局
-        if (player.pos.z < -137 && stage >= 2) triggerEnding();
+        // 走到终章长路的尽头，结局
+        if (world.endReached(player.pos.x, player.pos.z)) triggerEnding();
         audio.setHeight(camera.position.y);
       }
     } else {
@@ -458,9 +474,23 @@
   window.__YH = {
     tp: function (x, z, y) { player.pos.set(x, y || 0, z); },
     stage: function (s) { stage = s; world.setStage(s, true); },
-    seenAll: function () { world.fragments.forEach(function (f) { f.seen = true; seen[f.id] = true; }); },
+    seenAll: function () {
+      world.fragments.forEach(function (f) { f.seen = true; f.dropped = false; seen[f.id] = true; });
+    },
+    dropAll: function () {
+      if (carried) dropItem();
+      world.fragments.forEach(function (f) { f.dropped = true; });
+    },
+    place: function (i) {
+      var p = world.PLACES[i];
+      if (!p) return null;
+      player.reset(p.gate.x, 0, p.gate.z, 0);
+      return p.name;
+    },
     state: function () { return { state: state, stage: stage, pos: player.pos.clone(), carried: carried && carried.name }; },
     cam: function () { return { yaw: player.yaw, pitch: player.pitch }; },
+    scene: function () { return world.scene(); },
+    camera: function () { return camera; },
     quality: function (q) { perfLock = true; applyQuality(q); return quality; },
     view: function (yaw, pitch) { player.yaw = yaw; if (pitch != null) player.pitch = pitch; },
     stats: function () { return { calls: renderer.info.render.calls, tris: renderer.info.render.triangles, geos: renderer.info.memory.geometries, tex: renderer.info.memory.textures }; }

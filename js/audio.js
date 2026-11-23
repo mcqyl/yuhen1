@@ -97,19 +97,35 @@
 
   function now() { return A.ctx ? A.ctx.currentTime : 0; }
 
-  /* 环境随阶段变化：0 薄雾暖 / 1 灰 / 2 浓雾压抑 */
+  /* 环境随区域变化：0-4 五片回忆区 / 5 荒原 / 6 结局 */
   A.setStage = function (s) {
     if (!A.ready) return;
     var t = now();
-    var wind = [0.14, 0.19, 0.24][s] || 0.16;
-    var cut = [520, 380, 260][s] || 460;
+    var wind = [0.13, 0.17, 0.22, 0.20, 0.11, 0.16, 0.10][s] || 0.16;
+    var cut = [560, 440, 320, 360, 600, 480, 620][s] || 460;
     A.windGain.gain.cancelScheduledValues(t);
     A.windGain.gain.linearRampToValueAtTime(wind, t + 3.5);
     A.windFilter.frequency.cancelScheduledValues(t);
     A.windFilter.frequency.linearRampToValueAtTime(cut, t + 3.5);
-    var dr = [0.0, 0.012, 0.03][s] || 0.0;
+    var dr = [0.0, 0.008, 0.028, 0.020, 0.0, 0.006, 0.0][s] || 0.0;
     A.droneGain.gain.cancelScheduledValues(t);
     A.droneGain.gain.linearRampToValueAtTime(dr, t + 4.0);
+  };
+
+  /* 雾门合上：一声闷响 + 长长的尾音 */
+  A.closeIn = function () {
+    if (!A.ready || A.muted) return;
+    var ctx = A.ctx, t = now();
+    var o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(96, t);
+    o.frequency.exponentialRampToValueAtTime(52, t + 1.3);
+    var g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.12, t + 0.14);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 3.4);
+    o.connect(g); g.connect(A.master);
+    o.start(t); o.stop(t + 3.6);
   };
 
   /* 站在高处：风声更明显、更亮 */
@@ -146,7 +162,7 @@
   A.pickup = function (stage) {
     if (!A.ready || A.muted) return;
     var ctx = A.ctx, t = now();
-    var base = [784, 659.3, 523.3][stage] || 698;
+    var base = [784, 659.3, 523.3, 466.2, 587.3][stage] || 698;
     [1, 1.5, 2.02].forEach(function (m, i) {
       var o = ctx.createOscillator();
       o.type = i === 0 ? 'sine' : 'triangle';

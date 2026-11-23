@@ -1164,13 +1164,15 @@
       c.style.height = H2 + 'px';
 
       var start = performance.now();
-      var dur = kind === 2 ? 14 : (kind === 0 ? 11 : 12);
+      var dur = kind === 2 ? 14 : (kind === 1 ? 13 : (kind === 0 ? 11 : 12));
       var rand = mulberry32(kind === 2 ? 8891 : 4477);
       var pal = kind === 2
         ? { sky: ['#eaf0f2', '#e6dcc6', '#c9b08a'], ground: '#a8a680', ink: '#332e26', glow: '#fff8e6', mist: '#f0e8d6' }
-        : kind === 0
-          ? { sky: ['#e4e5df', '#d6d8d0', '#b9bcb4'], ground: '#a8aba1', ink: '#3a3d38', glow: '#f4f2e6', mist: '#dcded6' }
-          : { sky: ['#d2d5cf', '#b6bbb5', '#8f958f'], ground: '#8e948c', ink: '#2e322d', glow: '#eae6d8', mist: '#c6cac3' };
+        : kind === 1
+          ? { sky: ['#e7e9e2', '#ded8c6', '#b6ae97'], ground: '#9da084', ink: '#33302a', glow: '#f6f2e4', mist: '#e4dfcd' }
+          : kind === 0
+            ? { sky: ['#e4e5df', '#d6d8d0', '#b9bcb4'], ground: '#a8aba1', ink: '#3a3d38', glow: '#f4f2e6', mist: '#dcded6' }
+            : { sky: ['#d2d5cf', '#b6bbb5', '#8f958f'], ground: '#8e948c', ink: '#2e322d', glow: '#eae6d8', mist: '#c6cac3' };
 
       function frame(now) {
         var t = (now - start) / 1000;
@@ -1180,6 +1182,7 @@
 
         var hy = H2 * 0.62;
         var fogK = kind === 2 ? clamp(1 - p * 2.4, 0.02, 1)
+          : kind === 1 ? clamp(1 - p * 1.9, 0.10, 1)
           : kind === 0 ? clamp(0.30 + Math.sin(p * Math.PI) * 0.06, 0.2, 0.5)
           : clamp(0.82 + Math.sin(p * Math.PI) * 0.1, 0.5, 1);
         wash(g, W2, H2, pal, rand, 0.38);
@@ -1190,19 +1193,19 @@
           g.save();
           g.globalCompositeOperation = 'screen';
           var sg0 = g.createRadialGradient(sunX, sunY, 0, sunX, sunY, H2 * 0.55);
-          sg0.addColorStop(0, 'rgba(255,250,232,' + (0.9 * sunA) + ')');
-          sg0.addColorStop(0.06, 'rgba(255,240,206,' + (0.75 * sunA) + ')');
+          sg0.addColorStop(0, 'rgba(255,250,232,' + (0.58 * sunA) + ')');
+          sg0.addColorStop(0.06, 'rgba(255,240,206,' + (0.44 * sunA) + ')');
           sg0.addColorStop(1, 'rgba(255,232,190,0)');
           g.fillStyle = sg0;
           g.fillRect(0, 0, W2, H2);
           g.globalAlpha = 1;
           g.restore();
         }
-        treeline(g, W2, H2, hy + 2, pal, rand, { alpha: kind === 2 ? 0.18 : 0.16, n: 22, blur: 2 });
+        treeline(g, W2, H2, hy + 2, pal, rand, { alpha: kind === 2 ? 0.18 : (kind === 1 ? 0.17 : 0.16), n: 22, blur: 2 });
         groundPlane(g, W2, H2, hy, pal, rand, {
-          mistAlpha: kind === 2 ? 0.10 + 0.65 * fogK : (kind === 0 ? 0.34 : 0.72),
-          tint: kind === 2 ? '#9aa06a' : '#8b918a',
-          tintAlpha: kind === 2 ? 0.34 : (kind === 0 ? 0.10 : 0.2)
+          mistAlpha: kind === 2 ? 0.05 + 0.34 * fogK : (kind === 1 ? 0.10 + 0.40 * fogK : (kind === 0 ? 0.34 : 0.72)),
+          tint: kind === 2 ? '#9aa055' : (kind === 1 ? '#8f9560' : '#8b918a'),
+          tintAlpha: kind === 2 ? 0.46 : (kind === 1 ? 0.34 : (kind === 0 ? 0.10 : 0.2))
         });
 
         for (var i = 0; i < 7; i++) {
@@ -1234,7 +1237,7 @@
           g.save();
           g.globalCompositeOperation = 'screen';
           var sg = g.createRadialGradient(W2 * 0.52, hy - H2 * 0.12, 0, W2 * 0.52, hy - H2 * 0.12, H2 * 0.78);
-          sg.addColorStop(0, 'rgba(255,248,228,' + (0.55 * p) + ')');
+          sg.addColorStop(0, 'rgba(255,248,228,' + (0.20 * p) + ')');
           sg.addColorStop(1, 'rgba(255,248,228,0)');
           g.fillStyle = sg; g.fillRect(0, 0, W2, H2);
           g.restore();
@@ -1253,6 +1256,31 @@
           var walkK = clamp((p - 0.18) / 0.72, 0, 1);
           person(g, W2 * 0.50 + walkK * W2 * 0.02, H2 * 0.905 - walkK * H2 * 0.11, H2 * (0.40 - walkK * 0.22), t * 3.0,
             { ink: pal.ink, alpha: 0.72 - walkK * 0.42, hair: 'long' });
+        } else if (kind === 1) {
+          // 放下结局：空着手往前走，碎片一块块沉进草里
+          var wk2 = clamp((p - 0.10) / 0.80, 0, 1);
+          g.save();
+          for (var d4 = 0; d4 < 13; d4++) {
+            var t0 = clamp((p - d4 * 0.035) * 2.6, 0, 1);
+            if (t0 <= 0) continue;
+            var dx4 = W2 * (0.50 + (d4 % 4 - 1.5) * 0.035) + Math.sin(d4 * 2.1) * W2 * 0.02;
+            var dy4 = H2 * 0.80 + t0 * H2 * 0.13 + (d4 % 5) * H2 * 0.012;
+            g.globalAlpha = (1 - t0) * 0.5;
+            g.fillStyle = pal.ink;
+            g.beginPath();
+            g.ellipse(dx4, dy4, H2 * 0.006, H2 * 0.004, d4, 0, TAU);
+            g.fill();
+          }
+          g.restore();
+          g.save();
+          g.globalCompositeOperation = 'screen';
+          var eg2 = g.createRadialGradient(W2 * 0.5, hy - H2 * 0.06, 0, W2 * 0.5, hy - H2 * 0.06, H2 * 0.95);
+          eg2.addColorStop(0, 'rgba(250,246,232,' + (0.22 + 0.08 * p) + ')');
+          eg2.addColorStop(1, 'rgba(250,246,232,0)');
+          g.fillStyle = eg2; g.fillRect(0, 0, W2, H2);
+          g.restore();
+          person(g, W2 * (0.49 + wk2 * 0.03), H2 * 0.90 - wk2 * H2 * 0.06, H2 * (0.40 - wk2 * 0.14), t * 2.6,
+            { ink: pal.ink, alpha: 0.70 - wk2 * 0.34, hair: 'long' });
         } else if (kind === 0) {
           // 空结局：草地上什么都没有，风也是轻的
           g.save();
@@ -1284,7 +1312,7 @@
 
         paperOverlay(g, W2, H2, 0.09);
         grain(g, W2, H2, 0.14);
-        vignette(g, W2, H2, kind === 2 ? 0.7 : 1.05);
+        vignette(g, W2, H2, kind === 2 ? 0.7 : (kind === 1 ? 0.86 : 1.05));
 
         var black = t < 1.2 ? 1 - t / 1.2 : 0;
         if (black > 0) {

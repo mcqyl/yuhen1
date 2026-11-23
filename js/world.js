@@ -5,14 +5,54 @@
   var W = {};
   var T = THREE;
 
-  var WORLD = { x0: -160, x1: 160, z0: -180, z1: 60 };
+  var WORLD = { x0: -114, x1: 114, z0: -102, z1: 118 };
 
-  var scene, root, stoneMat, stoneDarkMat, stoneMat3, woodMat, metalMat, ceramicMat;
-  var fragGroup, colliders = [], fragments = [], clouds = [], grassMesh, waterMesh, sunSprite;
+  /* 中央荒原 + 五片回忆区（按《枢纽：回忆荒原》布点）
+     方位角从 +z（北）顺时针量；入口碑立在枢纽石环缺口外。 */
+  var HUB_R = 30;
+  var PLACES = [
+    {
+      key: 'child', stage: 0, name: '童年区', sub: '灶台与银杏院 · 旧巷早点摊',
+      x0: -26, x1: 26, z0: 54, z1: 104,
+      gate: { x: 10, z: 54 }, gap: { x: 0, z: HUB_R }, ang: 0
+    },
+    {
+      key: 'youth', stage: 1, name: '少年区', sub: '小学办公室 · 初中岔路口 · 高中走廊',
+      x0: 50, x1: 98, z0: 0, z1: 48,
+      gate: { x: 50, z: 24 }, gap: { x: 28.5, z: 9.3 }, ang: 72
+    },
+    {
+      key: 'loss', stage: 2, name: '亲情与失去区', sub: '旧家饭桌 · 医院长廊 · 大学宿舍',
+      x0: 22, x1: 70, z0: -88, z1: -40,
+      gate: { x: 40, z: -40 }, gap: { x: 17.6, z: -24.3 }, ang: 144
+    },
+    {
+      key: 'adult', stage: 3, name: '成年疏离区', sub: '城市餐厅 · 拆迁围挡 · 出租屋浴室',
+      x0: -70, x1: -22, z0: -88, z1: -40,
+      gate: { x: -52, z: -40 }, gap: { x: -17.6, z: -24.3 }, ang: 216
+    },
+    {
+      key: 'final', stage: 4, name: '终章区', sub: '柜子深处 · 一条向前的长路',
+      x0: -98, x1: -50, z0: 0, z1: 48,
+      gate: { x: -50, z: 24 }, gap: { x: -28.5, z: 9.3 }, ang: 288
+    }
+  ];
+  // 结局点：终章长路尽头
+  var EXIT_POINT = { x: -95, z: 20 };
+  var END_POINT = { x: -93, z: 20 };
+  // 需要避开草木的室内地面（x0,z0,x1,z1）
+  var FLOORS = [];
+
+  var scene, root, stoneMat, stoneDarkMat, stoneMat3, woodMat, metalMat, ceramicMat, ceilMat, ceilDarkMat, beamMat;
+  var brickMat, paperMat, blueMat, whiteMat, tileMat, darkWoodMat, clothMat, mirrorMat, glassMat;
+  var leafMat = null, ginkgoTex = null;
+  var steams = [], gateLights = [], exitGate = null, exitClosed = false;
+  var fragGroup, colliders = [], fragments = [], clouds = [], grassMesh, waterMesh, sunSprite, groundMesh;
   var skyMat, fog, fragLights = [], pmrem = null, mistBanks = [], dust = null, hemiLight = null;
   var gradeTarget = null, envTex = null;
   var clockT = 0;
   var fogTarget = { color: new T.Color(0xd9d0c1), density: 0.011 };
+  var sunDirCur = new T.Vector3(0.4, 0.45, 0.6);
   var stageNow = 0;
 
   /* ---------------- 程序化贴图 ---------------- */
@@ -258,10 +298,8 @@
       g.beginPath(); g.arc(mx2, my2, mr2, 0, 6.2832); g.fill();
     }
 
-    // 土路
-    var pathZ = [56, 44, 30, 16, 4, -8, -20, -34, -48, -62, -76, -92, -106, -120, -134, -150, -168];
-    var pathX = [0, 0.4, -0.6, 0.8, 1.8, 0.4, -1.2, 0.2, 1.2, -0.6, 0.4, -0.8, 0.6, -0.4, 0, 0.3, 0];
-    function strokePath(width, color, blur) {
+    // 土路：从枢纽中央的石环向五个缺口辐射，再接到各区入口
+    function strokeTrail(pts, width, color, blur) {
       g.save();
       g.lineCap = 'round';
       g.lineJoin = 'round';
@@ -269,38 +307,72 @@
       g.lineWidth = width;
       if (blur) g.filter = 'blur(' + blur + 'px)';
       g.beginPath();
-      for (var k = 0; k < pathZ.length; k++) {
-        var X = px(pathX[k]), Y = py(pathZ[k]);
+      for (var k = 0; k < pts.length; k++) {
+        var X = px(pts[k][0]), Y = py(pts[k][1]);
         if (k === 0) g.moveTo(X, Y); else g.lineTo(X, Y);
       }
       g.stroke();
       g.restore();
     }
-    strokePath(26, 'rgba(74,70,58,.30)', 12);
-    strokePath(17, 'rgba(88,83,70,.52)', 7);
-    strokePath(11, '#5c574b', 3);
-    strokePath(6, '#686254', 2);
+
+    var trails = [];
+    PLACES.forEach(function (p, i) {
+      var gx = p.gate.x, gz = p.gate.z;
+      var mx = p.gap.x * 1.02, mz = p.gap.z * 1.02;
+      var pts = [[0, 0]];
+      // 略微弯折的土路，避免五条路像尺子画出来的
+      var bend = (i % 2 ? 1 : -1) * (2.5 + i * 0.6);
+      for (var t = 0.25; t < 1; t += 0.25) {
+        pts.push([
+          mx * t + Math.sin(t * 3.4 + i) * bend,
+          mz * t + Math.cos(t * 2.6 + i) * bend * 0.7
+        ]);
+      }
+      pts.push([mx, mz]);
+      pts.push([(mx + gx) / 2 + Math.sin(i * 1.7) * 2.2, (mz + gz) / 2 + Math.cos(i * 2.1) * 2.0]);
+      pts.push([gx, gz]);
+      trails.push(pts);
+    });
+    trails.forEach(function (pts) {
+      strokeTrail(pts, 26, 'rgba(74,70,58,.30)', 12);
+      strokeTrail(pts, 17, 'rgba(88,83,70,.52)', 7);
+      strokeTrail(pts, 11, '#5c574b', 3);
+      strokeTrail(pts, 6, '#686254', 2);
+    });
+    // 枢纽里的一圈踏出来的环路
+    (function () {
+      var ring = [];
+      for (var a = 0; a <= 64; a++) {
+        var ang = a / 64 * Math.PI * 2;
+        ring.push([Math.sin(ang) * 17, Math.cos(ang) * 17]);
+      }
+      strokeTrail(ring, 20, 'rgba(80,76,63,.26)', 10);
+      strokeTrail(ring, 9, 'rgba(96,90,77,.42)', 4);
+    })();
 
     g.save();
     g.globalAlpha = 0.35;
-    for (var d = 0; d < 2600; d++) {
-      var tz = Math.random() * 2 - 1;
-      var idx = Math.floor(Math.random() * (pathZ.length - 1));
-      var zz = pathZ[idx] + (Math.random() - 0.5) * 10;
-      var xx = pathX[idx] + tz * 2.4;
+    for (var d = 0; d < 3400; d++) {
+      var pi = Math.floor(Math.random() * trails.length);
+      var seg = trails[pi];
+      var si = Math.floor(Math.random() * (seg.length - 1));
+      var f2 = Math.random();
+      var tx2 = seg[si][0] + (seg[si + 1][0] - seg[si][0]) * f2 + (Math.random() - 0.5) * 5;
+      var tz2 = seg[si][1] + (seg[si + 1][1] - seg[si][1]) * f2 + (Math.random() - 0.5) * 5;
       g.fillStyle = Math.random() > 0.5 ? '#7d7667' : '#a0998a';
-      g.fillRect(px(xx) + Math.random() * 4, py(zz) + Math.random() * 4, 1 + Math.random() * 2.5, 1 + Math.random() * 2);
+      g.fillRect(px(tx2) + Math.random() * 4, py(tz2) + Math.random() * 4, 1 + Math.random() * 2.5, 1 + Math.random() * 2);
     }
     g.restore();
 
-    var puddles = [[-14, 4, 5], [10, -30, 4], [-6, -60, 6], [4, -96, 5], [-18, -118, 7]];
+    // 湿痕：只做很轻的暗斑，别让它变成水面上的一块亮斑
+    var puddles = [[-13, -6, 4.5], [66, 14, 3.5], [40, -56, 5], [-56, 16, 3.5]];
     puddles.forEach(function (p) {
-      var rg = g.createRadialGradient(px(p[0]), py(p[1]), 0, px(p[0]), py(p[1]), p[2] * 4.6);
-      rg.addColorStop(0, 'rgba(120,132,134,.55)');
-      rg.addColorStop(0.7, 'rgba(120,132,134,.28)');
-      rg.addColorStop(1, 'rgba(120,132,134,0)');
+      var rg = g.createRadialGradient(px(p[0]), py(p[1]), p[2] * 1.4, px(p[0]), py(p[1]), p[2] * 4.2);
+      rg.addColorStop(0, 'rgba(58,56,48,.22)');
+      rg.addColorStop(0.6, 'rgba(58,56,48,.11)');
+      rg.addColorStop(1, 'rgba(58,56,48,0)');
       g.fillStyle = rg;
-      g.beginPath(); g.arc(px(p[0]), py(p[1]), p[2] * 4.6, 0, 6.29); g.fill();
+      g.beginPath(); g.arc(px(p[0]), py(p[1]), p[2] * 4.2, 0, 6.29); g.fill();
     });
 
     var img = g.getImageData(0, 0, S, H);
@@ -582,9 +654,9 @@
       // 连续基座：保证整段墙连成一体，不至于碎成一个个方块
       var hb = h * (0.42 + Math.random() * 0.16);
       var bmat = Math.random() > 0.5 ? stoneDarkMat : stoneMat;
-      var base = new T.Mesh(chippedBox(w * 1.04, hb, d * 1.04, 0.045, Math.round(Math.abs(cx * 11 + cz * 7)) % 991), bmat);
+      var base = new T.Mesh(chippedBox(w * 1.12, hb, d * 1.12, 0.045, Math.round(Math.abs(cx * 11 + cz * 7)) % 991), bmat);
       base.position.set(cx, hb / 2, cz);
-      base.rotation.y = ang + (Math.random() - 0.5) * 0.03;
+      base.rotation.y = ang + (Math.random() - 0.5) * 0.012;
       base.castShadow = true;
       base.receiveShadow = true;
       root.add(base);
@@ -961,10 +1033,10 @@
   /* ---------------- 碎片数据 ---------------- */
 
   var FRAG_DEFS = [
-    /* ---- 第一段：还暖和的时候 ---- */
+    /* ---- 区域 1 · 童年：灶台与银杏院 / 旧巷早点摊 ---- */
     {
       id: 'stovechunk', stage: 0, name: '磨亮的灶台碎砖', shape: 'brick', mood: 'warm', seed: 1101,
-      pos: [2.35, 0.30, 41.2], rot: 0.4, scale: 1,
+      tier: 'main', where: '灶台边', pos: [10.4, 1.08, 75.0], rot: 0.4, scale: 1,
       shots: [
         { scene: 'stove', dur: 8.0, line: '我不饿，你吃。' },
         { scene: 'bowl', dur: 7.0 },
@@ -973,43 +1045,45 @@
     },
     {
       id: 'oilpaper', stage: 0, name: '浸透油的纸袋残片', shape: 'bag', mood: 'warm', seed: 1102,
-      pos: [-1.15, 0.03, 27.5], rot: -0.3, scale: 1.15,
+      tier: 'corner', where: '早点摊旁的地上', pos: [16.6, 0.10, 62.6], rot: -0.3, scale: 1.15,
       shots: [
         { scene: 'stall', dur: 8.0, line: '老样子，不要葱？' },
         { scene: 'bagshot', dur: 6.5, line: '长身体，多吃点。' },
         { scene: 'alley', dur: 7.0 }
       ]
     },
+
+    /* ---- 区域 2 · 少年：小学办公室 / 初中岔路口 / 高中走廊 ---- */
     {
-      id: 'homework', stage: 0, name: '泛黄的作业本残页', shape: 'page', mood: 'warm', seed: 1103,
-      pos: [14.4, 0.28, 0.9], rot: 1.1, scale: 1.2,
+      id: 'homework', stage: 1, name: '泛黄的作业本残页', shape: 'page', mood: 'gray', seed: 1103,
+      tier: 'high', where: '办公室窗台（要攀上去）', pos: [75, 1.86, 41.2], rot: 1.1, scale: 1.2,
       shots: [
         { scene: 'office', dur: 7.5 },
         { scene: 'redink', dur: 7.5, line: '下次别糊弄自己。' }
       ]
     },
     {
-      id: 'note', stage: 0, name: '揉皱又展平的纸条', shape: 'note', mood: 'warm', seed: 1104,
-      pos: [-6.4, 0.04, 36.0], rot: 0.8, scale: 1.1,
+      id: 'note', stage: 1, name: '揉皱又展平的纸条', shape: 'note', mood: 'gray', seed: 1104,
+      tier: 'corner', where: '初中课桌抽屉', pos: [58.4, 0.78, 23.6], rot: 0.8, scale: 1.1,
       shots: [
         { scene: 'classroom', dur: 7.5, line: '到家跟我说一声。' },
         { scene: 'fork', dur: 6.5 },
         { scene: 'chat', dur: 7.0 }
       ]
     },
-
-    /* ---- 第二段：开始失去 ---- */
     {
       id: 'exam', stage: 1, name: '试卷的一角', shape: 'ticket', mood: 'gray', seed: 2101,
-      pos: [-6.2, 0.80, -34.2], rot: 0.2, scale: 1.1,
+      tier: 'main', where: '高中走廊窗边', pos: [57.4, 0.08, 5.4], rot: 0.2, scale: 1.1,
       shots: [
         { scene: 'corridor', dur: 8.0, line: '你也就这样了。' },
         { scene: 'standbell', dur: 6.5 }
       ]
     },
+
+    /* ---- 区域 3 · 亲情与失去：医院 / 宿舍 / 巷口 ---- */
     {
-      id: 'enamel', stage: 1, name: '掉漆搪瓷碗的瓷片', shape: 'shard', mood: 'gray', seed: 2102,
-      pos: [4.55, 1.21, -52.0], rot: 0.7, scale: 1.0,
+      id: 'enamel', stage: 2, name: '掉漆搪瓷碗的瓷片', shape: 'shard', mood: 'gray', seed: 2102,
+      tier: 'main', where: '病房床头柜', pos: [58.6, 0.88, -69.4], rot: 0.7, scale: 1.0,
       shots: [
         { scene: 'ward', dur: 8.0, line: '乖乖来了。' },
         { scene: 'handbowl', dur: 7.5, line: '我不饿。' },
@@ -1017,64 +1091,494 @@
       ]
     },
     {
-      id: 'mug', stage: 1, name: '白搪瓷杯口的碎块', shape: 'cup', mood: 'gray', seed: 2103,
-      pos: [-16.4, 0.06, -60.5], rot: -0.5, scale: 1.1,
+      id: 'mug', stage: 2, name: '白搪瓷杯口的碎块', shape: 'cup', mood: 'gray', seed: 2103,
+      tier: 'high', where: '宿舍上铺（要攀上去）', pos: [27.5, 1.74, -78.2], rot: -0.5, scale: 1.1,
       shots: [
         { scene: 'dorm', dur: 8.0 },
         { scene: 'cupwater', dur: 7.0, line: '好点没。' }
       ]
     },
     {
-      id: 'dogfood', stage: 1, name: '褪色的狗粮袋残片', shape: 'bag', mood: 'gray', seed: 2104,
-      pos: [10.4, 0.56, -39.1], rot: 0.9, scale: 1.1,
+      id: 'dogfood', stage: 2, name: '褪色的狗粮袋残片', shape: 'bag', mood: 'gray', seed: 2104,
+      tier: 'corner', where: '石墩旁边的草丛', pos: [67.0, 0.10, -81.6], rot: 0.9, scale: 1.1,
       shots: [
         { scene: 'canteen', dur: 7.5, line: '来福没了，老死的。' },
         { scene: 'alley', dur: 8.0 }
       ]
     },
 
-    /* ---- 第三段：都不在了 ---- */
+    /* ---- 区域 4 · 成年疏离：餐厅 / 拆迁围挡 / 浴室 ---- */
     {
-      id: 'receipt', stage: 2, name: '打印模糊的餐饮小票', shape: 'ticket', mood: 'dark', seed: 3101,
-      pos: [-6.1, 0.82, -88.2], rot: 0.5, scale: 1.15,
+      id: 'receipt', stage: 3, name: '打印模糊的餐饮小票', shape: 'ticket', mood: 'dark', seed: 3101,
+      tier: 'main', where: '餐桌桌面', pos: [-37.4, 0.81, -49.6], rot: 0.5, scale: 1.15,
       shots: [
         { scene: 'canteen', dur: 7.5, line: '没事，你忙。' },
         { scene: 'phone', dur: 8.0, line: '改天。' }
       ]
     },
     {
-      id: 'root', stage: 2, name: '银杏的白色断根', shape: 'root', mood: 'dark', seed: 3102,
-      pos: [-9.7, 0.62, -92.4], rot: -0.4, scale: 1.0,
+      id: 'root', stage: 3, name: '银杏的白色断根', shape: 'root', mood: 'dark', seed: 3102,
+      tier: 'corner', where: '围挡缝隙', pos: [-59.2, 0.16, -68.8], rot: -0.4, scale: 1.0,
       shots: [
         { scene: 'fence', dur: 8.5 },
         { scene: 'rootclose', dur: 7.5, line: '有些故乡，长大就是用来失去的。' }
       ]
     },
     {
-      id: 'glass', stage: 2, name: '镜面玻璃碎屑', shape: 'glass', mood: 'dark', seed: 3103,
-      pos: [12.2, 0.93, -103.6], rot: 0.15, scale: 1.1,
+      id: 'glass', stage: 3, name: '镜面玻璃碎屑', shape: 'glass', mood: 'dark', seed: 3103,
+      tier: 'main', where: '洗手台边缘', pos: [-25.35, 0.90, -81.4], rot: 0.15, scale: 1.1,
       shots: [
         { scene: 'mirror', dur: 9.0, line: '是不是我不够好。' },
         { scene: 'sink', dur: 6.0 }
       ]
     },
+
+    /* ---- 区域 5 · 终章：柜子深处 / 长路 ---- */
     {
-      id: 'woodbox', stage: 2, name: '空木盒的木屑', shape: 'box', mood: 'truth', seed: 3104, truth: true,
-      pos: [0.6, 0.82, -124.0], rot: 0.1, scale: 1.15,
+      id: 'woodbox', stage: 4, name: '空木盒的木屑', shape: 'box', mood: 'truth', seed: 3104, truth: true,
+      tier: 'main', where: '柜子底部', pos: [-86, 0.18, 35.0], rot: 0.1, scale: 1.15,
       shots: [
         { scene: 'cabinet', dur: 8.5 },
         { scene: 'flashback', dur: 8.0, line: '不是忘了，是刻意不翻。' }
       ]
     },
     {
-      id: 'leaf', stage: 2, name: '干枯的银杏叶', shape: 'leaf', mood: 'truth', seed: 3105,
-      pos: [2.10, 0.12, -130.5], rot: 0.6, scale: 1.2,
+      id: 'leaf', stage: 4, name: '干枯的银杏叶', shape: 'leaf', mood: 'truth', seed: 3105,
+      tier: 'main', where: '长路起始处', pos: [-62.5, 0.10, 21.4], rot: 0.6, scale: 1.2,
       shots: [
         { scene: 'leafpile', dur: 7.5, line: '踩着好听。' },
         { scene: 'emptylot', dur: 8.0 }
       ]
     }
   ];
+
+  /* ---------------- 五片区域的构件 ---------------- */
+
+  function slab(x0, z0, x1, z1, mat, h) {
+    // 允许参数写成"从近到远"或"从远到近"，这里统一成有序矩形
+    var ax0 = Math.min(x0, x1), ax1 = Math.max(x0, x1);
+    var az0 = Math.min(z0, z1), az1 = Math.max(z0, z1);
+    FLOORS.push([ax0, az0, ax1, az1]);
+    var m = boxMesh((ax0 + ax1) / 2, 0, (az0 + az1) / 2, ax1 - ax0, h || 0.08, az1 - az0, mat || stoneDarkMat, 0, false, false);
+    m.receiveShadow = true;
+    return m;
+  }
+
+  // 一块屋顶：给"室内"一个天花板，灯才有地方挂
+  function roof(x0, z0, x1, z1, h, opt) {
+    opt = opt || {};
+    var w = x1 - x0, d = z1 - z0;
+    var cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+    var th = opt.thick || 0.18;
+    var m = boxMesh(cx, h, cz, w, th, d, opt.mat || tileMat, 0, false, false);
+    m.receiveShadow = true; m.castShadow = true;
+    // 屋顶的底面：单独一层朝下的平面，材质自带一点自发光，室内不至于顶着一块黑
+    var cm = opt.ceil || ceilMat;
+    var cy = h - th / 2 - 0.012;
+    var cplane = new T.Mesh(new T.PlaneGeometry(w - 0.06, d - 0.06), cm);
+    cplane.rotation.x = Math.PI / 2;
+    cplane.position.set(cx, cy, cz);
+    cplane.receiveShadow = true;
+    root.add(cplane);
+    // 四周一圈裙板：墙头与天花板之间的那条缝，不遮住就会漏出天光
+    var sk = 0.40;
+    var skirtMat = opt.mat || tileMat;
+    [[cx, cz - d / 2 + 0.04, w, 0.08], [cx, cz + d / 2 - 0.04, w, 0.08],
+     [cx - w / 2 + 0.04, cz, 0.08, d], [cx + w / 2 - 0.04, cz, 0.08, d]].forEach(function (q) {
+      var b = new T.Mesh(new T.BoxGeometry(q[2], sk, q[3]), skirtMat);
+      b.position.set(q[0], cy - sk / 2 + 0.02, q[1]);
+      b.receiveShadow = true;
+      root.add(b);
+    });
+    // 檐口压条
+    boxMesh(cx, h - 0.07, z0 - 0.10, w + 0.26, 0.14, 0.2, stoneDarkMat, 0, false);
+    boxMesh(cx, h - 0.07, z1 + 0.10, w + 0.26, 0.14, 0.2, stoneDarkMat, 0, false);
+    // 梁
+    var nb = opt.beams == null ? Math.max(2, Math.round(w / 3.4)) : opt.beams;
+    for (var i = 0; i < nb; i++) {
+      boxMesh(x0 + (i + 0.5) * (w / nb), h - 0.26, cz, 0.17, 0.24, d - 0.1, beamMat, 0, false);
+    }
+    return m;
+  }
+
+  function desk(x, z, w, d, h, ry) {
+    w = w || 1.15; d = d || 0.62; h = h || 0.74;
+    boxMesh(x, h - 0.05, z, w, 0.06, d, darkWoodMat, ry || 0, true, true);
+    boxMesh(x - w / 2 + 0.08, 0, z - d / 2 + 0.06, 0.06, h - 0.05, 0.06, darkWoodMat, 0, false);
+    boxMesh(x + w / 2 - 0.08, 0, z - d / 2 + 0.06, 0.06, h - 0.05, 0.06, darkWoodMat, 0, false);
+    boxMesh(x - w / 2 + 0.08, 0, z + d / 2 - 0.06, 0.06, h - 0.05, 0.06, darkWoodMat, 0, false);
+    boxMesh(x + w / 2 - 0.08, 0, z + d / 2 - 0.06, 0.06, h - 0.05, 0.06, darkWoodMat, 0, false);
+  }
+
+  function chair(x, z, ry) {
+    boxMesh(x, 0.40, z, 0.44, 0.06, 0.44, darkWoodMat, ry || 0, true, true);
+    boxMesh(x, 0.46, z, 0.06, 0.52, 0.06, darkWoodMat, ry || 0, false);
+    boxMesh(x - 0.18, 0, z - 0.18, 0.05, 0.40, 0.05, darkWoodMat, 0, false);
+    boxMesh(x + 0.18, 0, z - 0.18, 0.05, 0.40, 0.05, darkWoodMat, 0, false);
+    boxMesh(x - 0.18, 0, z + 0.18, 0.05, 0.40, 0.05, darkWoodMat, 0, false);
+    boxMesh(x + 0.18, 0, z + 0.18, 0.05, 0.40, 0.05, darkWoodMat, 0, false);
+  }
+
+  // 一段带窗的墙：下裙 + 窗间柱 + 上梁，中间装玻璃
+  function windowWall(x1, z1, x2, z2, h, opt) {
+    opt = opt || {};
+    var alongX = Math.abs(x2 - x1) > Math.abs(z2 - z1);
+    var len = alongX ? Math.abs(x2 - x1) : Math.abs(z2 - z1);
+    var cx = (x1 + x2) / 2, cz = (z1 + z2) / 2;
+    var sill = opt.sill == null ? 0.92 : opt.sill;
+    var head = opt.head == null ? 2.05 : opt.head;
+    var th = opt.thick || 0.18;
+    var mat = opt.mat || whiteMat;
+
+    if (alongX) boxMesh(cx, 0, cz, len, sill, th, mat, 0, true, true);
+    else boxMesh(cx, 0, cz, th, sill, len, mat, 0, true, true);
+    if (h > head) {
+      if (alongX) boxMesh(cx, head, cz, len, h - head, th, mat, 0, true, false);
+      else boxMesh(cx, head, cz, th, h - head, len, mat, 0, true, false);
+    }
+    var n = Math.max(1, Math.round(len / 2.3));
+    for (var i = 0; i < n; i++) {
+      var t0 = (i / n) * len, t1 = ((i + 0.94) / n) * len;
+      var mid = (t0 + t1) / 2;
+      var paneLen = t1 - t0;
+      var px = alongX ? (x1 + (x2 - x1) * (mid / len)) : x1;
+      var pz = alongX ? z1 : (z1 + (z2 - z1) * (mid / len));
+      var glass = new T.Mesh(new T.PlaneGeometry(paneLen * 0.96, head - sill), glassMat);
+      glass.position.set(px, (sill + head) / 2, pz);
+      if (!alongX) glass.rotation.y = Math.PI / 2;
+      root.add(glass);
+      var bar = new T.Mesh(new T.BoxGeometry(alongX ? paneLen * 0.98 : 0.04, 0.04, alongX ? 0.04 : paneLen * 0.98), metalMat);
+      bar.position.set(px, (sill + head) / 2, pz);
+      root.add(bar);
+      var mull = new T.Mesh(new T.BoxGeometry(0.05, head - sill, 0.05), metalMat);
+      mull.position.set(px, (sill + head) / 2, pz);
+      root.add(mull);
+      var edge = alongX ? (x1 + (x2 - x1) * (t0 / len)) : (z1 + (z2 - z1) * (t0 / len));
+      if (alongX) boxMesh(edge, sill, cz, 0.18, head - sill, th, mat, 0, true, false);
+      else boxMesh(cx, sill, edge, th, head - sill, 0.18, mat, 0, true, false);
+    }
+  }
+
+  function makeStove(x, z, ry) {
+    boxMesh(x, 0, z, 2.3, 1.02, 2.6, brickMat, ry || 0, true, true);
+    var wok = new T.Mesh(new T.CylinderGeometry(0.56, 0.46, 0.34, 22, 1, true), new T.MeshStandardMaterial({
+      color: 0x241f1a, roughness: 0.42, metalness: 0.72, side: T.DoubleSide, envMapIntensity: 0.9
+    }));
+    wok.position.set(x, 1.17, z - 0.55);
+    wok.castShadow = true;
+    root.add(wok);
+    var rim = new T.Mesh(new T.TorusGeometry(0.56, 0.045, 8, 26), metalMat);
+    rim.rotation.x = Math.PI / 2;
+    rim.position.set(x, 1.33, z - 0.55);
+    root.add(rim);
+    // 灶膛口：正面一个黑洞，里面一点暗红，比任何说明都直白
+    var mouth = new T.Mesh(new T.BoxGeometry(0.84, 0.56, 0.12), new T.MeshStandardMaterial({ color: 0x120f0c, roughness: 1, metalness: 0 }));
+    mouth.position.set(x, 0.40, z - 1.30);
+    root.add(mouth);
+    var ember = new T.Mesh(new T.PlaneGeometry(0.6, 0.26), new T.MeshBasicMaterial({ color: 0xff7328, transparent: true, opacity: 0.38 }));
+    ember.position.set(x, 0.24, z - 1.368);
+    ember.rotation.y = Math.PI;
+    root.add(ember);
+    var lid = new T.Mesh(new T.CylinderGeometry(0.6, 0.6, 0.07, 24), darkWoodMat);
+    lid.position.set(x + 0.62, 1.06, z + 0.30);
+    lid.rotation.set(0, 0.4, 0.02);
+    lid.castShadow = true;
+    root.add(lid);
+    var knob = new T.Mesh(new T.CylinderGeometry(0.05, 0.06, 0.1, 10), woodMat);
+    knob.position.set(x + 0.62, 1.13, z + 0.30);
+    root.add(knob);
+    // 蒸笼：三层，竹色有深浅，各带一道箍
+    var bamA = new T.MeshStandardMaterial({ color: 0x9c8452, roughness: 0.92 });
+    var bamB = new T.MeshStandardMaterial({ color: 0x8a7443, roughness: 0.94 });
+    for (var i = 0; i < 3; i++) {
+      var s = new T.Mesh(new T.CylinderGeometry(0.34, 0.35, 0.15, 18), i % 2 ? bamB : bamA);
+      s.position.set(x - 0.70, 1.09 + i * 0.155, z + 0.86);
+      s.castShadow = true;
+      root.add(s);
+      var hoop = new T.Mesh(new T.TorusGeometry(0.352, 0.012, 5, 20), bamB);
+      hoop.rotation.x = Math.PI / 2;
+      hoop.position.set(x - 0.70, 1.02 + i * 0.155, z + 0.86);
+      root.add(hoop);
+    }
+    var bamLid = new T.Mesh(new T.CylinderGeometry(0.36, 0.335, 0.07, 18), bamB);
+    bamLid.position.set(x - 0.70, 1.07 + 3 * 0.155, z + 0.86);
+    bamLid.castShadow = true;
+    root.add(bamLid);
+    var cloth = new T.Mesh(new T.PlaneGeometry(0.34, 0.26), new T.MeshStandardMaterial({ color: 0x9e9a8d, roughness: 0.98, side: T.DoubleSide }));
+    cloth.rotation.set(-Math.PI / 2 + 0.04, 0, 0.22);
+    cloth.position.set(x - 0.52, 1.032, z + 0.42);
+    root.add(cloth);
+    for (var k = 0; k < 3; k++) addSteam(x + (k - 1) * 0.22, 1.40, z - 0.55, 1.0 + k * 0.2);
+    var fire = new T.PointLight(0xff8a3c, 0.42, 5.0, 2);
+    fire.position.set(x, 0.65, z - 0.4);
+    root.add(fire);
+  }
+
+  function addSteam(x, y, z, sc) {
+    var sp = new T.Sprite(new T.SpriteMaterial({
+      map: mistTexture(), transparent: true, depthWrite: false, opacity: 0, color: 0xf6f2e6
+    }));
+    sp.scale.set(1.5 * sc, 1.9 * sc, 1);
+    sp.position.set(x, y, z);
+    sp.userData = { x: x, z: z, y0: y, ph: Math.random(), sp: 0.10 + Math.random() * 0.06, sc: sc };
+    scene.add(sp);
+    steams.push(sp);
+  }
+
+  function makeStall(x, z) {
+    boxMesh(x, 0.72, z, 2.0, 0.07, 0.9, woodMat, 0, true, true);
+    boxMesh(x - 0.8, 0, z - 0.3, 0.07, 0.72, 0.07, metalMat, 0, false);
+    boxMesh(x + 0.8, 0, z - 0.3, 0.07, 0.72, 0.07, metalMat, 0, false);
+    boxMesh(x - 0.8, 0, z + 0.3, 0.07, 0.72, 0.07, metalMat, 0, false);
+    boxMesh(x + 0.8, 0, z + 0.3, 0.07, 0.72, 0.07, metalMat, 0, false);
+    var pot = new T.Mesh(new T.CylinderGeometry(0.42, 0.34, 0.3, 18, 1, true), new T.MeshStandardMaterial({ color: 0x3a352e, roughness: 0.5, metalness: 0.7, side: T.DoubleSide }));
+    pot.position.set(x + 0.5, 0.9, z);
+    root.add(pot);
+    var oil = new T.Mesh(new T.CircleGeometry(0.4, 20), new T.MeshStandardMaterial({ color: 0x7a5c1f, roughness: 0.25, metalness: 0.3, envMapIntensity: 1.1 }));
+    oil.rotation.x = -Math.PI / 2;
+    oil.position.set(x + 0.5, 1.02, z);
+    root.add(oil);
+    var bamA2 = new T.MeshStandardMaterial({ color: 0xa89160, roughness: 0.92 });
+    var bamB2 = new T.MeshStandardMaterial({ color: 0x8d7845, roughness: 0.94 });
+    for (var i = 0; i < 4; i++) {
+      var s = new T.Mesh(new T.CylinderGeometry(0.44, 0.45, 0.16, 20), i % 2 ? bamB2 : bamA2);
+      s.position.set(x - 0.55, 0.79 + i * 0.17, z);
+      s.castShadow = true;
+      root.add(s);
+      var hp = new T.Mesh(new T.TorusGeometry(0.452, 0.013, 5, 22), bamB2);
+      hp.rotation.x = Math.PI / 2;
+      hp.position.set(x - 0.55, 0.73 + i * 0.17, z);
+      root.add(hp);
+    }
+    var lid2 = new T.Mesh(new T.CylinderGeometry(0.465, 0.43, 0.08, 20), bamB2);
+    lid2.position.set(x - 0.55, 0.79 + 4 * 0.17, z);
+    lid2.castShadow = true;
+    root.add(lid2);
+    addSteam(x - 0.55, 1.6, z, 1.25);
+    var red = new T.MeshStandardMaterial({ color: 0x9a4438, roughness: 0.72 });
+    var blue = new T.MeshStandardMaterial({ color: 0x3f5f7a, roughness: 0.72 });
+    [[-0.9, 0.9, red], [0.2, 1.0, blue], [1.1, 0.7, red]].forEach(function (s2) {
+      boxMesh(x + s2[0], 0.30, z + s2[1], 0.34, 0.06, 0.32, s2[2], 0.2, true, true);
+      boxMesh(x + s2[0], 0, z + s2[1], 0.28, 0.30, 0.26, s2[2], 0.2, false);
+    });
+    boxMesh(x + 2.6, 0, z + 0.4, 0.95, 0.52, 0.8, stoneMat, 0.2, true, true);
+    // 石墩顶面被磨得发亮（来福趴了一辈子）
+    var worn = new T.Mesh(new T.CylinderGeometry(0.34, 0.34, 0.012, 18),
+      new T.MeshStandardMaterial({ color: 0xb9b3a2, roughness: 0.32, metalness: 0.04, envMapIntensity: 0.9 }));
+    worn.position.set(x + 2.6, 0.527, z + 0.4);
+    root.add(worn);
+  }
+
+  function makeArch(x, z, ry) {
+    boxMesh(x - 1.5, 0, z, 0.9, 2.2, 1.4, stoneDarkMat, ry || 0, true, false);
+    boxMesh(x + 1.5, 0, z, 0.9, 2.2, 1.4, stoneDarkMat, ry || 0, true, false);
+    for (var i = 0; i < 5; i++) {
+      var t = i / 4;
+      var m = new T.Mesh(new T.BoxGeometry(0.62, 0.34, 1.5), stoneMat);
+      m.position.set(x - 1.4 + t * 2.8, 2.32 + Math.sin(t * Math.PI) * 0.42, z);
+      m.rotation.z = (t - 0.5) * 0.5;
+      m.castShadow = true;
+      root.add(m);
+    }
+    var dark = new T.Mesh(new T.PlaneGeometry(2.2, 2.0), new T.MeshBasicMaterial({ color: 0x0e0f0c }));
+    dark.position.set(x, 1.05, z + 0.72);
+    root.add(dark);
+  }
+
+  function makeFence(x1, z1, x2, z2, h) {
+    var len = Math.max(Math.abs(x2 - x1), Math.abs(z2 - z1));
+    var alongX = Math.abs(x2 - x1) > Math.abs(z2 - z1);
+    var n = Math.max(1, Math.round(len / 2.0));
+    for (var i = 0; i < n; i++) {
+      var t = (i + 0.5) / n;
+      var px = x1 + (x2 - x1) * t, pz = z1 + (z2 - z1) * t;
+      var g = new T.Mesh(new T.BoxGeometry(alongX ? len / n * 0.98 : 0.08, h, alongX ? 0.08 : len / n * 0.98), blueMat);
+      g.position.set(px, h / 2, pz);
+      g.rotation.y = (Math.random() - 0.5) * 0.02;
+      g.castShadow = true; g.receiveShadow = true;
+      root.add(g);
+      addCollider(px, pz, alongX ? len / n : 0.3, alongX ? 0.3 : len / n, 0, h, false);
+      boxMesh(px - (alongX ? len / n / 2 : 0), 0, pz - (alongX ? 0 : len / n / 2), 0.09, h + 0.12, 0.09, metalMat, 0, false);
+    }
+    for (var k = 0; k < 3; k++) {
+      var t2 = 0.2 + k * 0.3;
+      var paper = new T.Mesh(new T.PlaneGeometry(0.62, 0.86), paperMat);
+      paper.position.set(x1 + (x2 - x1) * t2, 1.28, z1 + (z2 - z1) * t2 + (alongX ? -0.06 : 0));
+      if (!alongX) { paper.rotation.y = -Math.PI / 2; paper.position.x -= 0.06; }
+      paper.rotation.z = (Math.random() - 0.5) * 0.08;
+      root.add(paper);
+    }
+  }
+
+  function makeBunk(x, z, ry) {
+    var w = 1.0, d = 2.0;
+    for (var i = 0; i < 2; i++) {
+      var y = i === 0 ? 0.46 : 1.34;
+      boxMesh(x, y, z, w, 0.07, d, darkWoodMat, ry || 0, true, true);
+      var quilt = new T.Mesh(new T.BoxGeometry(w * 0.9, 0.13, d * 0.82), clothMat);
+      quilt.position.set(x, y + 0.11, z + 0.08);
+      root.add(quilt);
+      var pil = new T.Mesh(new T.BoxGeometry(w * 0.62, 0.10, 0.34), new T.MeshStandardMaterial({ color: 0xcfc9b8, roughness: 0.94 }));
+      pil.position.set(x, y + 0.12, z - d / 2 + 0.32);
+      root.add(pil);
+    }
+    [[-w / 2 + 0.05, -d / 2 + 0.05], [w / 2 - 0.05, -d / 2 + 0.05], [-w / 2 + 0.05, d / 2 - 0.05], [w / 2 - 0.05, d / 2 - 0.05]].forEach(function (p) {
+      boxMesh(x + p[0], 0, z + p[1], 0.06, 1.95, 0.06, metalMat, 0, true, false);
+    });
+    for (var s = 0; s < 3; s++) {
+      boxMesh(x + w / 2 + 0.14, 0.28 + s * 0.3, z - 0.3, 0.34, 0.05, 0.06, metalMat, 0, false);
+    }
+    addCollider(x, z, w, d, 0, 1.45, true);
+  }
+
+  function makeCabinet(x, z) {
+    var w = 5.2, h = 2.8, d = 2.6;
+    boxMesh(x, 0, z - d / 2, w, h, 0.12, darkWoodMat, 0, true, false);
+    boxMesh(x - w / 2, 0, z, 0.12, h, d, darkWoodMat, 0, true, false);
+    boxMesh(x + w / 2, 0, z, 0.12, h, d, darkWoodMat, 0, true, false);
+    boxMesh(x, h - 0.12, z, w, 0.12, d, darkWoodMat, 0, true, false);
+    for (var i = 0; i < 2; i++) {
+      boxMesh(x, 0.95 + i * 0.85, z + 0.15, w - 0.2, 0.06, 0.7, woodMat, 0, true, true);
+    }
+    for (var k = 0; k < 7; k++) {
+      var bx = x - w / 2 + 0.7 + Math.random() * (w - 1.4);
+      var bz = z - 0.4 + Math.random() * 0.9;
+      var by = k < 3 ? 1.01 : 1.86;
+      boxMesh(bx, by, bz, 0.4 + Math.random() * 0.3, 0.28 + Math.random() * 0.16, 0.36 + Math.random() * 0.2,
+        Math.random() > 0.5 ? paperMat : woodMat, Math.random(), true, true);
+    }
+    var door = boxMesh(x - w / 4, 0, z + d / 2, w / 2 - 0.06, 2.6, 0.08, darkWoodMat, 0, false, false);
+    door.rotation.y = -0.9;
+    door.position.set(x - w / 2 - 0.4, 1.3, z + d / 2 - 0.2);
+  }
+
+  function makeWindowBand(x1, z1, x2, z2, h, mat) {
+    windowWall(x1, z1, x2, z2, h, { mat: mat || whiteMat, sill: 1.35, head: 2.55, thick: 0.16 });
+  }
+
+  function makeNameStele(p) {
+    var gx = p.gate.x, gz = p.gate.z;
+    var dx = gx - p.gap.x, dz = gz - p.gap.z;
+    var len = Math.sqrt(dx * dx + dz * dz) || 1;
+    var nx = dx / len, nz = dz / len;
+    var sx = gx - nx * 0.5 + nz * 2.8;
+    var sz = gz - nz * 0.5 - nx * 2.8;
+    var stone = boxMesh(sx, 0, sz, 1.0, 2.5, 0.3, stoneDarkMat, Math.atan2(dx, dz) + Math.PI / 2, true, false);
+    stone.rotation.x = (Math.random() - 0.5) * 0.03;
+    var tex = labelTexture(p.name, p.sub);
+    var face = new T.Mesh(new T.PlaneGeometry(0.86, 2.1), new T.MeshBasicMaterial({
+      map: tex, transparent: true, opacity: 0.9, depthWrite: false
+    }));
+    face.position.set(sx, 1.32, sz);
+    face.rotation.y = Math.atan2(dx, dz) + Math.PI / 2;
+    face.translateZ(0.17);
+    root.add(face);
+    var gl = new T.Sprite(new T.SpriteMaterial({
+      map: glowTexture('rgba(255,244,214,1)', 'rgba(255,226,168,.28)'),
+      transparent: true, blending: T.AdditiveBlending, depthWrite: false, opacity: 0.55
+    }));
+    gl.scale.set(3.4, 3.4, 1);
+    gl.position.set(sx, 0.5, sz);
+    root.add(gl);
+    gateLights.push(gl);
+  }
+
+  function labelTexture(title, sub) {
+    var W = 256, H = 640, c = cv(W, H), g = c.getContext('2d');
+    g.clearRect(0, 0, W, H);
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    var chars = title.split('');
+    var step = 96;
+    var y0 = 78 + (H - 160 - (chars.length - 1) * step) / 2;
+    g.font = '600 74px "Songti SC","STSong","SimSun",serif';
+    chars.forEach(function (ch, i) {
+      g.fillStyle = 'rgba(246,242,230,.55)';
+      g.fillText(ch, W / 2 + 1.5, y0 + i * step + 1.5);
+      g.fillStyle = 'rgba(26,24,20,.86)';
+      g.fillText(ch, W / 2, y0 + i * step);
+    });
+    g.strokeStyle = 'rgba(30,28,24,.5)';
+    g.lineWidth = 2;
+    g.beginPath(); g.moveTo(W / 2 - 34, H - 118); g.lineTo(W / 2 + 34, H - 118); g.stroke();
+    g.font = '400 20px "Songti SC","STSong","SimSun",serif';
+    g.fillStyle = 'rgba(30,28,24,.6)';
+    var parts = sub.split(' · ');
+    parts.forEach(function (t, i) {
+      g.fillText(t, W / 2, H - 96 + i * 24);
+    });
+    var tex = new T.CanvasTexture(c);
+    tex.colorSpace = T.SRGBColorSpace;
+    tex.anisotropy = 4;
+    return tex;
+  }
+
+  function ginkgoTexture() {
+    var S = 128, c = cv(S, S), g = c.getContext('2d');
+    g.clearRect(0, 0, S, S);
+    var cx = S / 2, cy = S * 0.52, r = S * 0.40;
+    g.save();
+    g.translate(cx, cy);
+    var grad = g.createLinearGradient(0, -r, 0, r);
+    grad.addColorStop(0, '#d8b25c');
+    grad.addColorStop(0.55, '#c08f3e');
+    grad.addColorStop(1, '#8d6329');
+    g.fillStyle = grad;
+    g.beginPath();
+    g.moveTo(0, r * 0.85);
+    g.arc(0, -r * 0.42, r, Math.PI * 0.18, Math.PI * 0.82, false);
+    g.quadraticCurveTo(0, -r * 0.34, 0, r * 0.85);
+    g.closePath();
+    g.fill();
+    g.strokeStyle = 'rgba(120,80,30,.42)';
+    g.lineWidth = 1.3;
+    for (var i = -3; i <= 3; i++) {
+      g.beginPath();
+      g.moveTo(0, r * 0.72);
+      g.lineTo(i * r * 0.28, -r * 1.28);
+      g.stroke();
+    }
+    g.globalCompositeOperation = 'destination-out';
+    g.beginPath();
+    g.moveTo(-S * 0.03, -S * 0.06);
+    g.lineTo(0, S * 0.02);
+    g.lineTo(S * 0.03, -S * 0.06);
+    g.fill();
+    g.restore();
+    var tex = new T.CanvasTexture(c);
+    tex.colorSpace = T.SRGBColorSpace;
+    tex.anisotropy = 4;
+    return tex;
+  }
+
+  function leafCarpet(x0, z0, x1, z1, n, y) {
+    if (!ginkgoTex) ginkgoTex = ginkgoTexture();
+    if (!leafMat) {
+      leafMat = new T.MeshStandardMaterial({
+        map: ginkgoTex, transparent: true, alphaTest: 0.42, side: T.DoubleSide,
+        roughness: 0.88, metalness: 0, envMapIntensity: 0.4
+      });
+    }
+    if (!leafCarpet._geo) leafCarpet._geo = new T.PlaneGeometry(0.24, 0.24);
+    var mesh = new T.InstancedMesh(leafCarpet._geo, leafMat, n);
+    var dummy = new T.Object3D();
+    var col = new T.Color();
+    for (var i = 0; i < n; i++) {
+      dummy.position.set(x0 + Math.random() * (x1 - x0), (y || 0.026) + Math.random() * 0.012, z0 + Math.random() * (z1 - z0));
+      dummy.rotation.set(-Math.PI / 2 + (Math.random() - 0.5) * 0.5, Math.random() * 6.28, 0);
+      var sc = 0.7 + Math.random() * 0.85;
+      dummy.scale.set(sc, sc, sc);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+      var v = 0.72 + Math.random() * 0.5;
+      col.setRGB(v, v * (0.9 + Math.random() * 0.2), v * (0.62 + Math.random() * 0.2));
+      mesh.setColorAt(i, col);
+    }
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+    return mesh;
+  }
 
   /* ---------------- 场景搭建 ---------------- */
 
@@ -1122,6 +1626,42 @@
       color: 0xd5c9b2, roughness: 0.3, metalness: 0.0,
       clearcoat: 0.7, clearcoatRoughness: 0.32, envMapIntensity: 1.1
     });
+
+    // 区域专用材质
+    brickMat = new T.MeshStandardMaterial({
+      map: sset.albedo, normalMap: sset.normal, roughnessMap: sset.rough,
+      color: 0x9a7355, roughness: 0.95, metalness: 0, envMapIntensity: 0.42, vertexColors: true
+    });
+    brickMat.normalScale.set(1.2, 1.2);
+    paperMat = new T.MeshStandardMaterial({ color: 0xd9cfb6, roughness: 0.94, metalness: 0, side: T.DoubleSide, envMapIntensity: 0.3 });
+    blueMat = new T.MeshStandardMaterial({ color: 0x3f6a86, roughness: 0.52, metalness: 0.38, envMapIntensity: 0.9 });
+    whiteMat = new T.MeshStandardMaterial({ color: 0xb4b2a9, roughness: 0.90, metalness: 0, envMapIntensity: 0.34 });
+    // 天花板：完全背光也不会黑成一块布，靠一点自发光兜底
+    ceilMat = new T.MeshStandardMaterial({
+      color: 0xb0aaa0, roughness: 0.97, metalness: 0, envMapIntensity: 0.16,
+      emissive: 0x2b261f, emissiveIntensity: 1.0
+    });
+    beamMat = new T.MeshStandardMaterial({
+      color: 0x453726, roughness: 0.96, metalness: 0, envMapIntensity: 0.10,
+      emissive: 0x0a0704, emissiveIntensity: 1.0
+    });
+    ceilDarkMat = new T.MeshStandardMaterial({
+      color: 0x6f675c, roughness: 0.98, metalness: 0, envMapIntensity: 0.12,
+      emissive: 0x241f19, emissiveIntensity: 1.0
+    });
+    tileMat = new T.MeshStandardMaterial({
+      map: sset.albedo, normalMap: sset.normal, roughnessMap: sset.rough,
+      color: 0x8e8f86, roughness: 0.94, metalness: 0.0, envMapIntensity: 0.26, vertexColors: true
+    });
+    tileMat.normalScale.set(0.8, 0.8);
+    darkWoodMat = new T.MeshStandardMaterial({ color: 0x5d4a38, roughness: 0.88, metalness: 0, envMapIntensity: 0.3 });
+    clothMat = new T.MeshStandardMaterial({ color: 0x8e8b7d, roughness: 0.95, metalness: 0 });
+    mirrorMat = new T.MeshStandardMaterial({ color: 0xb9c2c4, roughness: 0.05, metalness: 1.0, envMapIntensity: 1.6 });
+    glassMat = new T.MeshPhysicalMaterial({
+      color: 0xa8b8bc, roughness: 0.10, metalness: 0, transmission: 0,
+      transparent: true, opacity: 0.18, envMapIntensity: 1.6, side: T.DoubleSide, depthWrite: false
+    });
+    FLOORS.length = 0;
 
     // 地面
     var gtex = groundTexture();
@@ -1172,6 +1712,7 @@
     ground.position.set(0, 0, (WORLD.z0 + WORLD.z1) / 2);
     ground.receiveShadow = true;
     scene.add(ground);
+    groundMesh = ground;
 
     // 远景地面：只看作雾里的地平线，防止露出天空球下缘
     var farGround = new T.Mesh(
@@ -1276,7 +1817,7 @@
     scene.add(hemi);
     hemiLight = hemi;
 
-    var amb = new T.AmbientLight(0xbfb8a8, 0.09);
+    var amb = new T.AmbientLight(0xbfb8a8, 0.17);
     scene.add(amb);
 
     var sun = new T.DirectionalLight(0xfff0da, 1.05);
@@ -1307,205 +1848,746 @@
     buildMist();
     buildDust();
 
-    /* ---- 第一段 ---- */
-    // 入口豁口两侧的断墙
-    wall(-15, 44.2, -3.2, 44.2, 1.35, 1.1, { broken: true, seg: 2.2 });
-    wall(2.4, 44.2, 13, 44.2, 1.3, 1.1, { broken: true, seg: 2.2 });
-    wall(-15, 44.2, -15, 39.5, 1.1, 0.9, { broken: true, gaps: 0.35 });
-    wall(13, 44.2, 13, 39.5, 1.05, 0.9, { broken: true, gaps: 0.4 });
-    // 门槛台阶
-    boxMesh(0, 0, 43.8, 5.0, 0.14, 1.6, stoneDarkMat, 0, true, true);
+    /* ---- 中央荒原：石环 + 五处缺口 + 中央石阵 ---- */
+    buildHub();
 
-    makeGazebo(15, -2);
-    makeTree(22, -8, { h: 9.5, r: 0.4, branches: 6, depth: 4 });
-    makeTree(-24, 14, { h: 7, r: 0.28, branches: 5, depth: 4 });
-    makeTree(-30, -10, { h: 8, r: 0.3, branches: 5, depth: 3 });
+    /* ---- 五片回忆区 ---- */
+    buildChild();
+    buildYouth();
+    buildLoss();
+    buildAdult();
+    buildFinal();
 
-    // 石台
-    boxMesh(6.2, 0, 30.5, 2.2, 1.05, 1.8, stoneMat, 0, true, true);
-    boxMesh(-8.5, 0, 12.5, 2.8, 0.72, 2.2, stoneMat, 0, true, true);
-    // 矮墙
-    wall(-6.5, 6.5, 2.0, 6.5, 1.05, 0.55, {});
-    // 斜靠的粗树干
-    (function () {
-      var g = new T.Group();
-      var len = 5.2;
-      var cyl = new T.Mesh(new T.CylinderGeometry(0.19, 0.26, len, 8), woodMat);
-      cyl.rotation.z = Math.PI / 2 - 0.26;
-      cyl.position.set(-11, 0.75, 3.2);
-      cyl.castShadow = true; cyl.receiveShadow = true;
-      root.add(cyl);
-      addCollider(-11, 3.2, 4.8, 0.62, 0, 1.15, true);
-      // 树根
-      makeRubble(-13.6, 3.2, 5, 1.2);
-    })();
-    // 残墙院落
-    wall(-30, 26, -18, 26, 1.5, 0.6, { broken: true, gaps: 0.25 });
-    wall(-30, 26, -30, 14, 1.4, 0.6, { broken: true, gaps: 0.3 });
-    wall(-18, 26, -18, 19, 1.3, 0.6, { broken: true, gaps: 0.4 });
-    makeRubble(-24, 20, 12, 4);
+    function buildHub() {
+      // 一圈断墙围出荒原的“院子”，在五个方位留缺口
+      var N = 100;
+      for (var i = 0; i < N; i++) {
+        var a = (i / N) * Math.PI * 2;
+        var deg = a * 180 / Math.PI;
+        var near = false;
+        for (var p = 0; p < PLACES.length; p++) {
+          var dd = Math.abs((((deg - PLACES[p].ang) % 360) + 540) % 360 - 180);
+          if (dd < 9) { near = true; break; }
+        }
+        if (near) continue;
+        if (Math.random() < 0.22) continue;
+        var x = Math.sin(a) * HUB_R, z = Math.cos(a) * HUB_R;
+        var h = 0.65 + Math.random() * 1.35;
+        boxMesh(x, 0, z, 2.0, h, 0.85, Math.random() > 0.55 ? stoneDarkMat : stoneMat, a, true, h < 1.7);
+      }
 
-    // 水塘
-    (function () {
-      var wn = groundNormalMap();
-      wn.repeat.set(5, 5);
-      var pmat = new T.MeshStandardMaterial({
-        color: 0x66787b, roughness: 0.13, metalness: 0.55,
-        normalMap: wn, envMapIntensity: 1.05
+      // 每个缺口两侧立门柱，柱上一点残光
+      PLACES.forEach(function (p) {
+        var a = p.ang * Math.PI / 180;
+        var tx = Math.cos(a), tz = -Math.sin(a);
+        for (var s = -1; s <= 1; s += 2) {
+          var px = Math.sin(a) * HUB_R + tx * 3.5 * s;
+          var pz = Math.cos(a) * HUB_R + tz * 3.5 * s;
+          boxMesh(px, 0, pz, 0.85, 2.5 + (s > 0 ? 0.35 : 0), 0.85, stoneMat, a, true, false);
+          boxMesh(px, 2.45 + (s > 0 ? 0.35 : 0), pz, 1.05, 0.16, 1.05, stoneDarkMat, a, false, false);
+        }
+        makeNameStele(p);
       });
-      pmat.normalScale.set(0.32, 0.32);
-      var pond = new T.Mesh(new T.CircleGeometry(9.5, 48), pmat);
-      pond.rotation.x = -Math.PI / 2;
-      pond.position.set(-19, 0.035, -6);
-      pond.scale.set(1.35, 1, 1);
-      scene.add(pond);
-      waterMesh = pond;
-      for (var i = 0; i < 26; i++) {
-        var a = Math.random() * 6.28;
-        var rx = 12.4 * (1 + Math.random() * 0.12);
-        var rz = 9.2 * (1 + Math.random() * 0.12);
-        var s = 0.24 + Math.random() * 0.5;
-        var m = new T.Mesh(paintAO(new T.DodecahedronGeometry(s, 0), 0.55), stoneMat);
-        m.position.set(-19 + Math.cos(a) * rx, s * 0.4, -6 + Math.sin(a) * rz);
-        m.rotation.set(Math.random(), Math.random(), Math.random());
-        m.castShadow = true;
-        root.add(m);
-      }
-    })();
 
-    // 散落草垛/土堆
-    for (var mi = 0; mi < 26; mi++) {
-      var mx = (Math.random() - 0.5) * 90;
-      var mz = 46 - Math.random() * 66;
-      if (Math.abs(mx) < 4) continue;
-      makeRubble(mx, mz, 2 + Math.floor(Math.random() * 3), 2);
-    }
-
-    /* ---- 第二段：界墙（断墙缺口）---- */
-    wall(-34, -20, -3.4, -20, 1.55, 1.0, { broken: true, seg: 2.6, gaps: 0.12 });
-    wall(2.6, -20, 34, -20, 1.5, 1.0, { broken: true, seg: 2.6, gaps: 0.12 });
-    // 缺口的门柱
-    boxMesh(-3.6, 0, -20, 0.9, 2.3, 0.9, stoneMat, 0, true, false);
-    boxMesh(2.8, 0, -20, 0.9, 2.6, 0.9, stoneMat, 0, true, false);
-    // 缺口前的石阶（站高一点看远处）
-    boxMesh(0, 0, -18.2, 5.0, 0.42, 1.8, stoneMat, 0, true, true);
-
-    /* ---- 第二段场景 ---- */
-    makeShelter(10, -40);
-    makeTable(-6, -34, 0.78);
-    // 需要爬上去的矮墙
-    wall(2.0, -52, 7.0, -52, 1.18, 0.7, {});
-    wall(7.0, -52, 7.0, -47, 1.1, 0.7, {});
-    // 下沉的院落
-    wall(-22, -56, -11, -56, 1.25, 0.7, { broken: true, gaps: 0.2 });
-    wall(-22, -56, -22, -66, 1.2, 0.7, { broken: true, gaps: 0.25 });
-    wall(-22, -66, -11, -66, 1.05, 0.7, { broken: true, gaps: 0.3 });
-    wall(-11, -66, -11, -60, 1.0, 0.7, { broken: true, gaps: 0.4 });
-    makeRubble(-16.5, -61, 14, 3.5);
-    // 稀疏的枯树列
-    for (var ti = 0; ti < 7; ti++) {
-      makeTree(-26 + ti * 9 + (Math.random() - 0.5) * 4, -26 - Math.random() * 40, {
-        h: 5.5 + Math.random() * 3, r: 0.24 + Math.random() * 0.12, branches: 4, depth: 2
-      });
-    }
-    // 碎墙阵
-    wall(-4, -30, -4, -40, 0.95, 0.5, { broken: true, gaps: 0.35 });
-    wall(16, -62, 16, -70, 1.2, 0.6, { broken: true, gaps: 0.25 });
-    boxMesh(-2, 0, -68, 3.4, 0.55, 2.0, stoneMat, 0.4, true, true);
-
-    /* ---- 第三段界线：倒下的枯树 ---- */
-    (function () {
-      // 倒木横卧，需要翻过去
-      var log = new T.Mesh(new T.CylinderGeometry(0.42, 0.5, 52, 9), woodMat);
-      log.rotation.z = Math.PI / 2;
-      log.position.set(0, 0.52, -74);
-      log.castShadow = true; log.receiveShadow = true;
-      root.add(log);
-      addCollider(0, -74, 52, 1.05, 0, 1.0, true);
-      // 断枝
-      for (var i = 0; i < 9; i++) {
-        var b = new T.Mesh(new T.CylinderGeometry(0.06, 0.11, 1.2 + Math.random(), 5), woodMat);
-        b.position.set(-22 + Math.random() * 44, 1.0 + Math.random() * 0.5, -74 + (Math.random() - 0.5) * 0.7);
-        b.rotation.z = (Math.random() - 0.5) * 2;
-        b.rotation.x = (Math.random() - 0.5) * 1.2;
-        b.castShadow = true;
-        root.add(b);
+      // 中央石阵：八块立石 + 一方低台
+      for (var k = 0; k < 8; k++) {
+        var ka = (k / 8) * Math.PI * 2 + 0.2;
+        var kx = Math.sin(ka) * 4.6, kz = Math.cos(ka) * 4.6;
+        var sh = 1.1 + Math.random() * 1.0;
+        var st = boxMesh(kx, 0, kz, 0.5, sh, 0.42, stoneMat, ka, true, true);
+        st.rotation.z = (Math.random() - 0.5) * 0.16;
       }
-      // 两侧延伸的残墙
-      wall(-34, -74, -26, -74, 1.4, 1.0, { broken: true, seg: 3, gaps: 0.15 });
-      wall(26, -74, 34, -74, 1.35, 1.0, { broken: true, seg: 3, gaps: 0.15 });
-      // 一个可以踩上去的树墩
-      boxMesh(28, 0, -72, 1.6, 0.75, 1.6, woodMat, 0, true, true);
-    })();
+      boxMesh(0, 0, 0, 3.2, 0.28, 3.2, stoneDarkMat, Math.PI / 8, true, true);
+      boxMesh(0, 0.28, 0, 1.6, 0.34, 1.6, stoneMat, 0, true, true);
+      var core = new T.Sprite(new T.SpriteMaterial({
+        map: glowTexture('rgba(255,247,224,1)', 'rgba(255,228,178,.30)'),
+        transparent: true, blending: T.AdditiveBlending, depthWrite: false, opacity: 0.32
+      }));
+      core.scale.set(9, 9, 1);
+      core.position.set(0, 0.75, 0);
+      scene.add(core);
+      var coreLight = new T.PointLight(0xffe6bc, 0.55, 16, 2);
+      coreLight.position.set(0, 2.2, 0);
+      scene.add(coreLight);
 
-    /* ---- 第三段：破屋 / 站台 ---- */
-    // 破屋
-    wall(-16, -84, -2, -84, 2.4, 0.5, { broken: true, gaps: 0.15 });
-    wall(-16, -84, -16, -97, 2.2, 0.5, { broken: true, gaps: 0.2 });
-    wall(-16, -97, -4, -97, 2.0, 0.5, { broken: true, gaps: 0.25 });
-    wall(-4, -97, -4, -92, 1.9, 0.5, { broken: true, gaps: 0.15 });
-    wall(-4, -89, -4, -84, 2.1, 0.5, { broken: true, gaps: 0.15 });
-    // 窗台
-    boxMesh(-6.1, 0, -88.2, 1.8, 0.78, 0.42, stoneMat, 0, true, true);
-    // 塌落的屋梁
-    (function () {
-      for (var i = 0; i < 5; i++) {
-        var bm = new T.Mesh(new T.BoxGeometry(0.22, 0.24, 6 + Math.random() * 3), woodMat);
-        bm.position.set(-12 + Math.random() * 6, 0.2 + Math.random() * 0.35, -88 - Math.random() * 6);
-        bm.rotation.set(Math.random() * 0.3, Math.random() * 3, Math.random() * 0.3);
-        bm.castShadow = true;
-        root.add(bm);
-      }
-    })();
-    makeRubble(-8, -92, 16, 4);
+      // 荒原里的旧物：亭子、水塘、树、断墙
+      makeGazebo(15, -3);
+      makeTree(22, -9, { h: 9.5, r: 0.4, branches: 6, depth: 4 });
+      makeTree(-25, 13, { h: 7, r: 0.28, branches: 5, depth: 4 });
+      makeTree(-26, -3, { h: 8, r: 0.3, branches: 5, depth: 3 });
+      wall(-24, 20, -13, 20, 1.15, 0.55, { broken: true, gaps: 0.3 });
+      wall(-24, 20, -24, 11, 1.05, 0.55, { broken: true, gaps: 0.35 });
+      makeRubble(-19, 16, 9, 3);
+      boxMesh(9, 0, 14, 1.9, 0.62, 1.6, stoneMat, 0.3, true, true);
 
-    // 站台
-    makePlatformSlab(17, -106, 18, 12, 0.9);
-    // 站台顶棚残架
-    (function () {
-      for (var i = 0; i < 4; i++) {
-        boxMesh(9.5 + i * 4.5, 0.9, -110, 0.16, 2.5, 0.16, metalMat, 0, true, false);
-      }
-      boxMesh(15, 3.4, -110, 14, 0.12, 5.5, metalMat, 0, true, false);
-    })();
-    // 铁轨
-    (function () {
-      var railMat = new T.MeshStandardMaterial({ color: 0x7d786e, roughness: 0.55, metalness: 0.7 });
-      for (var r = 0; r < 2; r++) {
-        var rail = new T.Mesh(new T.BoxGeometry(0.1, 0.12, 60), railMat);
-        rail.position.set(24 + r * 1.5, 0.06, -104);
-        rail.castShadow = true;
-        root.add(rail);
-      }
-      for (var sl = 0; sl < 26; sl++) {
-        var tie = new T.Mesh(new T.BoxGeometry(3.4, 0.08, 0.24), woodMat);
-        tie.position.set(24.75, 0.02, -78 - sl * 2.3);
-        root.add(tie);
-      }
-      // 站台边缘挡墙
-      wall(8, -112.2, 26, -112.2, 0.42, 0.3, { noCollide: true });
-    })();
-    // 第三段枯树
-    for (var t3 = 0; t3 < 8; t3++) {
-      makeTree(-34 + t3 * 11 + Math.random() * 5, -80 - Math.random() * 42, {
-        h: 6 + Math.random() * 4, r: 0.26 + Math.random() * 0.16, branches: 4, depth: 2
+      // 水塘
+      (function () {
+        var wn = groundNormalMap();
+        wn.repeat.set(4, 4);
+        var pmat = new T.MeshStandardMaterial({
+          color: 0x66787b, roughness: 0.13, metalness: 0.55,
+          normalMap: wn, envMapIntensity: 1.05
+        });
+        pmat.normalScale.set(0.32, 0.32);
+        var pond = new T.Mesh(new T.CircleGeometry(6.2, 40), pmat);
+        pond.rotation.x = -Math.PI / 2;
+        pond.position.set(-15, 0.035, -8);
+        pond.scale.set(1.25, 1, 1);
+        scene.add(pond);
+        waterMesh = pond;
+        for (var i = 0; i < 18; i++) {
+          var aa = Math.random() * 6.28;
+          var s2 = 0.24 + Math.random() * 0.5;
+          var m = new T.Mesh(paintAO(new T.DodecahedronGeometry(s2, 0), 0.55), stoneMat);
+          m.position.set(-15 + Math.cos(aa) * 8.1, s2 * 0.4, -8 + Math.sin(aa) * 6.4);
+          m.rotation.set(Math.random(), Math.random(), Math.random());
+          m.castShadow = true;
+          root.add(m);
+        }
+      })();
+
+      // 缺口外的引路灯：雾里能看见的微光
+      PLACES.forEach(function (p) {
+        var a = p.ang * Math.PI / 180;
+        for (var d2 = 7; d2 <= 20; d2 += 6.5) {
+          var lx = p.gap.x + (p.gate.x - p.gap.x) * (d2 / 26);
+          var lz = p.gap.z + (p.gate.z - p.gap.z) * (d2 / 26);
+          lx += (Math.random() - 0.5) * 1.6;
+          lz += (Math.random() - 0.5) * 1.6;
+          boxMesh(lx, 0, lz, 0.16, 0.34 + Math.random() * 0.2, 0.16, stoneDarkMat, a, true, true);
+        }
       });
     }
-    // 真相前的石台
-    makeTable(0.6, -124, 0.8);
-    // 最后一道门
-    wall(-9, -130, -2.2, -130, 2.0, 0.8, { broken: true, gaps: 0.1 });
-    wall(2.2, -130, 9, -130, 2.1, 0.8, { broken: true, gaps: 0.1 });
-    boxMesh(-2.6, 0, -130, 0.9, 3.0, 0.9, stoneMat, 0, true, false);
-    boxMesh(2.6, 0, -130, 0.9, 2.8, 0.9, stoneMat, 0, true, false);
 
-    /* ---- 结局草地 ---- */
-    for (var e = 0; e < 10; e++) {
-      makeTree(-40 + e * 9 + Math.random() * 5, -140 - Math.random() * 22, {
-        h: 5 + Math.random() * 4, r: 0.22, branches: 4, depth: 2
+    /* ---- 区域 1：童年区（巷口早点摊 + 灶房 + 银杏院）---- */
+    function buildChild() {
+      // 前沿墙：中间留 6..14 的门
+      wall(-26, 54, 6, 54, 2.05, 0.85, { broken: true, seg: 2.6, gaps: 0.018 });
+      wall(14, 54, 26, 54, 2.05, 0.85, { broken: true, seg: 2.6, gaps: 0.018 });
+      // 门柱 / 门楣 / 门槛
+      boxMesh(6.4, 0, 54, 0.72, 2.42, 0.78, stoneDarkMat, 0, true, false);
+      boxMesh(13.6, 0, 54, 0.72, 2.38, 0.78, stoneDarkMat, 0, true, false);
+      boxMesh(10, 2.34, 54, 7.6, 0.22, 0.86, stoneMat, 0, false, false);
+      boxMesh(10, 0, 54.5, 7.0, 0.10, 1.9, stoneDarkMat, 0, true, true);
+
+      // 院墙：加高到 1.9，站在院里看不到外面那片空地
+      wall(-26, 54, -26, 104, 1.92, 0.8, { broken: true, seg: 3, gaps: 0.03 });
+      wall(26, 54, 26, 104, 1.92, 0.8, { broken: true, seg: 3, gaps: 0.03 });
+      wall(-26, 104, 26, 104, 1.86, 0.8, { broken: true, seg: 3, gaps: 0.13 });
+
+      // 前院与后院之间的一道院墙（留 3 米宽的过门）
+      wall(-26, 68, -2, 68, 1.78, 0.55, { broken: true, seg: 2.5, gaps: 0.07 });
+      wall(3.4, 68, 8, 68, 1.75, 0.55, { broken: true, seg: 2.2, gaps: 0.025 });
+      boxMesh(-2.2, 0, 68, 0.5, 2.02, 0.72, stoneMat, 0, true, false);
+      boxMesh(3.6, 0, 68, 0.5, 1.98, 0.72, stoneMat, 0, true, false);
+
+      // ---- 巷口早餐摊：摊子 + 一块旧雨棚 ----
+      makeStall(18, 60.5);
+      (function () {
+        var tp = new T.MeshStandardMaterial({ color: 0x8d8477, roughness: 0.96, metalness: 0, side: T.DoubleSide });
+        [[16.7, 59.2], [19.3, 59.2], [16.7, 61.9], [19.3, 61.9]].forEach(function (q) {
+          boxMesh(q[0], 0, q[1], 0.06, 2.16, 0.06, metalMat, 0, false);
+        });
+        var tarp = new T.Mesh(new T.BoxGeometry(3.1, 0.05, 3.0), tp);
+        tarp.position.set(18, 2.18, 60.5);
+        tarp.rotation.z = -0.045;
+        tarp.castShadow = true;
+        root.add(tarp);
+        // 棚下垂着的一块旧布
+        var flap = new T.Mesh(new T.PlaneGeometry(2.5, 0.5), tp);
+        flap.position.set(18, 1.9, 61.98);
+        flap.rotation.x = 0.06;
+        root.add(flap);
+      })();
+
+      // ---- 灶房：x 8..24, z 66..84 ----
+      wall(8, 66, 16.6, 66, 2.52, 0.42, { seg: 2.4, gaps: 0.018 });
+      wall(20.6, 66, 24, 66, 2.52, 0.42, { seg: 2.0, gaps: 0.018 });
+      wall(8, 66, 8, 84, 2.56, 0.42, { seg: 3, gaps: 0.02 });
+      wall(24, 66, 24, 84, 2.52, 0.42, { seg: 3, gaps: 0.02 });
+      wall(8, 84, 24, 84, 2.52, 0.42, { seg: 3, gaps: 0.025 });
+      // 西墙开一扇窗，屋里才不闷
+      boxMesh(8, 0, 73, 0.44, 1.0, 3.0, stoneDarkMat, 0, false, false);
+      boxMesh(8, 1.92, 73, 0.44, 0.75, 3.0, stoneMat3, 0, false, false);
+      // 门框
+      boxMesh(16.9, 0, 66.1, 0.16, 2.2, 0.5, darkWoodMat, 0, false, false);
+      boxMesh(20.3, 0, 66.1, 0.16, 2.2, 0.5, darkWoodMat, 0, false, false);
+      boxMesh(18.6, 2.18, 66.1, 3.6, 0.16, 0.5, darkWoodMat, 0, false, false);
+      slab(8, 66, 24, 84, tileMat, 0.05);
+      roof(7.5, 65.6, 24.5, 84.4, 2.74, { beams: 4, ceil: ceilDarkMat });
+      // 梁下挂的灯泡
+      var bulb = new T.Mesh(new T.SphereGeometry(0.075, 10, 8), new T.MeshBasicMaterial({ color: 0xffe9bc }));
+      bulb.position.set(14.4, 2.30, 74.4);
+      root.add(bulb);
+      var wire = new T.Mesh(new T.CylinderGeometry(0.007, 0.007, 0.30, 4), new T.MeshStandardMaterial({ color: 0x2a2620, roughness: 1 }));
+      wire.position.set(14.4, 2.50, 74.4);
+      root.add(wire);
+      var shade = new T.Mesh(new T.ConeGeometry(0.17, 0.12, 12, 1, true), new T.MeshStandardMaterial({ color: 0x6f6a5c, roughness: 0.9, side: T.DoubleSide }));
+      shade.position.set(14.4, 2.38, 74.4);
+      root.add(shade);
+      var bulbL = new T.PointLight(0xffce8a, 1.25, 11, 1.6);
+      bulbL.position.set(14.4, 2.36, 74.4);
+      root.add(bulbL);
+      // 门口漏进来的日光
+      var doorFill = new T.PointLight(0xc6d4dc, 0.5, 9, 1.6);
+      doorFill.position.set(18.6, 1.6, 64.6);
+      root.add(doorFill);
+      // 灶台
+      makeStove(9.7, 74.2, 0);
+      // 后半间隔成柴房：一道带门的隔墙
+      wall(8, 79.4, 15.2, 79.4, 2.46, 0.28, { seg: 2.4, gaps: 0.02 });
+      wall(19.2, 79.4, 24, 79.4, 2.46, 0.28, { seg: 2.4, gaps: 0.02 });
+      boxMesh(15.2, 0, 79.4, 0.3, 2.2, 0.34, darkWoodMat, 0, false, false);
+      boxMesh(19.2, 0, 79.4, 0.3, 2.2, 0.34, darkWoodMat, 0, false, false);
+      boxMesh(17.2, 2.12, 79.4, 4.4, 0.32, 0.34, darkWoodMat, 0, false, false);
+      // 柴房里靠墙的柴垛
+      for (var w = 0; w < 26; w++) {
+        var wd = new T.Mesh(new T.CylinderGeometry(0.085, 0.095, 0.95 + Math.random() * 0.4, 6), woodMat);
+        wd.position.set(9.4 + (w % 7) * 0.21, 0.10 + Math.floor(w / 7) * 0.165, 81.4 + Math.random() * 0.3);
+        wd.rotation.x = Math.PI / 2;
+        wd.rotation.z = (Math.random() - 0.5) * 0.25;
+        wd.castShadow = true;
+        root.add(wd);
+      }
+      // 柴房门口的一口缸
+      var bigJar = new T.Mesh(new T.CylinderGeometry(0.44, 0.36, 0.86, 16, 1, true), new T.MeshStandardMaterial({ color: 0x53463a, roughness: 0.78, side: T.DoubleSide }));
+      bigJar.position.set(20.9, 0.43, 80.6);
+      bigJar.castShadow = true;
+      root.add(bigJar);
+      // 案板与碗
+      boxMesh(19.6, 0, 76.4, 2.2, 0.8, 1.0, woodMat, 0, true, true);
+      for (var bw = 0; bw < 3; bw++) {
+        var b2 = new T.Mesh(new T.CylinderGeometry(0.13, 0.09, 0.09, 14, 1, true), ceramicMat);
+        b2.position.set(19.0 + bw * 0.34, 0.84, 76.2 + (bw % 2) * 0.3);
+        root.add(b2);
+      }
+      // 竹菜筐
+      var basket = new T.Mesh(new T.CylinderGeometry(0.38, 0.3, 0.32, 14, 1, true), new T.MeshStandardMaterial({ color: 0xa8905f, roughness: 0.92, side: T.DoubleSide }));
+      basket.position.set(15.6, 0.16, 70.6);
+      root.add(basket);
+
+      // ---- 银杏院：老银杏 + 落叶 + 一圈矮砖 ----
+      makeTree(-9, 92, { h: 13, r: 0.62, branches: 7, depth: 4 });
+      leafCarpet(-16, 84, -2, 100, 2600);
+      wall(-18, 82, -18, 100, 0.48, 0.34, { broken: true, seg: 2.2, gaps: 0.06, noCollide: false });
+      wall(-18, 100, 0, 100, 0.46, 0.34, { broken: true, seg: 2.2, gaps: 0.02 });
+      wall(0, 100, 0, 84, 0.46, 0.34, { broken: true, seg: 2.2, gaps: 0.02 });
+      wall(-1.6, 82, -7, 82, 0.44, 0.34, { broken: true, seg: 2.0, gaps: 0.018 });
+      makeTree(-21, 74, { h: 7.5, r: 0.3, branches: 5, depth: 3 });
+
+      // 井
+      (function () {
+        var ring = new T.Mesh(new T.CylinderGeometry(1.0, 1.04, 0.64, 18, 1, true), stoneMat);
+        ring.position.set(-22, 0.32, 78);
+        ring.castShadow = true; ring.receiveShadow = true;
+        root.add(ring);
+        var water = new T.Mesh(new T.CircleGeometry(0.94, 18), new T.MeshStandardMaterial({ color: 0x2c3330, roughness: 0.08, metalness: 0.4, envMapIntensity: 0.9 }));
+        water.rotation.x = -Math.PI / 2;
+        water.position.set(-22, 0.42, 78);
+        root.add(water);
+        addCollider(-22, 78, 2.1, 2.1, 0, 0.64, true);
+        boxMesh(-22.9, 0, 78, 0.14, 2.0, 0.14, woodMat, 0, false);
+        boxMesh(-21.1, 0, 78, 0.14, 2.0, 0.14, woodMat, 0, false);
+        boxMesh(-22, 1.96, 78, 2.0, 0.12, 0.14, woodMat, 0, false);
+        // 木桶
+        var bucket = new T.Mesh(new T.CylinderGeometry(0.24, 0.2, 0.3, 12), woodMat);
+        bucket.position.set(-20.6, 0.15, 76.9);
+        root.add(bucket);
+      })();
+
+      // 晾衣绳
+      (function () {
+        boxMesh(-3.4, 0, 76, 0.1, 2.1, 0.1, woodMat, 0, false);
+        boxMesh(-3.4, 0, 84.5, 0.1, 2.05, 0.1, woodMat, 0, false);
+        var line = new T.Mesh(new T.CylinderGeometry(0.012, 0.012, 8.6, 4), new T.MeshStandardMaterial({ color: 0x8a8478, roughness: 1 }));
+        line.position.set(-3.4, 2.02, 80.25);
+        line.rotation.x = Math.PI / 2;
+        root.add(line);
+        var clothMat2 = new T.MeshStandardMaterial({ color: 0xc3bdae, roughness: 0.97, side: T.DoubleSide });
+        var clothMat3 = new T.MeshStandardMaterial({ color: 0x8f9a92, roughness: 0.97, side: T.DoubleSide });
+        [[77.4, 0.9, clothMat2], [79.6, 0.7, clothMat3], [81.9, 1.0, clothMat2]].forEach(function (c3, i3) {
+          var cl = new T.Mesh(new T.PlaneGeometry(0.78, c3[1]), c3[2]);
+          cl.position.set(-3.4, 2.0 - c3[1] / 2, c3[0]);
+          cl.rotation.y = Math.PI / 2;
+          cl.rotation.z = (Math.random() - 0.5) * 0.05;
+          root.add(cl);
+        });
+      })();
+
+      // 水缸两口
+      [[5.4, 70.4], [4.6, 69.4]].forEach(function (j) {
+        var jar = new T.Mesh(new T.CylinderGeometry(0.34, 0.28, 0.62, 14, 1, true), new T.MeshStandardMaterial({ color: 0x4a4038, roughness: 0.72, metalness: 0.1, side: T.DoubleSide }));
+        jar.position.set(j[0], 0.31, j[1]);
+        jar.castShadow = true;
+        root.add(jar);
+        var lid = new T.Mesh(new T.CylinderGeometry(0.35, 0.35, 0.05, 14), woodMat);
+        lid.position.set(j[0], 0.64, j[1]);
+        root.add(lid);
       });
+
+      // 门槛边的板凳与菜筐
+      boxMesh(-4.4, 0.2, 90.5, 0.62, 0.06, 0.42, woodMat, 0.4, true, true);
+      boxMesh(-4.4, 0, 90.5, 0.36, 0.2, 0.30, woodMat, 0.4, false);
+      boxMesh(-5.2, 0.2, 84, 1.7, 0.08, 0.42, woodMat, 0.06, true, true);
+      boxMesh(-5.9, 0, 84, 0.1, 0.2, 0.34, woodMat, 0, false);
+      boxMesh(-4.5, 0, 84, 0.1, 0.2, 0.34, woodMat, 0, false);
+      var basket2 = new T.Mesh(new T.CylinderGeometry(0.34, 0.27, 0.28, 12, 1, true), new T.MeshStandardMaterial({ color: 0x9c8452, roughness: 0.92, side: T.DoubleSide }));
+      basket2.position.set(-3.6, 0.14, 89.6);
+      root.add(basket2);
+
+      // 桥洞（巷子西头的旧涵洞）
+      makeArch(-21.6, 56.2, 0);
+      leafCarpet(-25, 56, -18, 62, 140, 0.03);
+
+      // ---- 西边这片空地：柴棚 + 菜畦 + 石桌，别让前院空成一片草地 ----
+      (function () {
+        // 柴棚：四根柱子 + 一块石棉瓦顶
+        var px0 = -15.6, pz0 = 60.4, px1 = -11.4, pz1 = 64.2;
+        [[px0, pz0], [px1, pz0], [px0, pz1], [px1, pz1]].forEach(function (q) {
+          boxMesh(q[0], 0, q[1], 0.12, 2.16, 0.12, woodMat, 0, false);
+        });
+        var shed = new T.Mesh(new T.BoxGeometry(px1 - px0 + 0.5, 0.10, pz1 - pz0 + 0.5),
+          new T.MeshStandardMaterial({ color: 0x6b6559, roughness: 0.97, metalness: 0.02 }));
+        shed.position.set((px0 + px1) / 2, 2.20, (pz0 + pz1) / 2);
+        shed.rotation.z = -0.03;
+        shed.castShadow = true;
+        root.add(shed);
+        // 棚下码着的柴
+        for (var w2 = 0; w2 < 22; w2++) {
+          var lg = new T.Mesh(new T.CylinderGeometry(0.075, 0.085, 1.15, 6), woodMat);
+          lg.position.set(-15.1 + (w2 % 6) * 0.19, 0.09 + Math.floor(w2 / 6) * 0.15, 61.9 + Math.random() * 0.4);
+          lg.rotation.x = Math.PI / 2;
+          lg.rotation.z = (Math.random() - 0.5) * 0.2;
+          lg.castShadow = true;
+          root.add(lg);
+        }
+        // 柴棚边的破陶罐
+        var jug = new T.Mesh(new T.CylinderGeometry(0.22, 0.16, 0.46, 12, 1, true), new T.MeshStandardMaterial({ color: 0x5d5145, roughness: 0.8, side: T.DoubleSide }));
+        jug.position.set(-10.6, 0.23, 63.4);
+        jug.castShadow = true;
+        root.add(jug);
+
+        // 菜畦：三条土垄，垄上零星的菜苗
+        var soilMat = new T.MeshStandardMaterial({ color: 0x453a2c, roughness: 1, metalness: 0 });
+        for (var r2 = 0; r2 < 3; r2++) {
+          var rz = 57.6 + r2 * 2.6;
+          var ridge = new T.Mesh(new T.BoxGeometry(6.4, 0.14, 1.15), soilMat);
+          ridge.position.set(-5.4, 0.07, rz);
+          ridge.receiveShadow = true;
+          root.add(ridge);
+          var leafMat = new T.MeshStandardMaterial({ color: 0x5c6b34, roughness: 0.92 });
+          for (var p3 = 0; p3 < 22; p3++) {
+            var tuft = new T.Mesh(new T.ConeGeometry(0.045 + Math.random() * 0.02, 0.09 + Math.random() * 0.06, 4), leafMat);
+            tuft.position.set(-8.4 + p3 * 0.28 + Math.random() * 0.14, 0.15, rz + (Math.random() - 0.5) * 0.8);
+            tuft.rotation.z = (Math.random() - 0.5) * 0.4;
+            root.add(tuft);
+          }
+        }
+        // 竹篱笆
+        for (var f3 = 0; f3 < 9; f3++) {
+          var pst = new T.Mesh(new T.CylinderGeometry(0.028, 0.032, 0.78, 5), new T.MeshStandardMaterial({ color: 0x94834f, roughness: 0.95 }));
+          pst.position.set(-8.9 + f3 * 0.5, 0.39, 66.6);
+          root.add(pst);
+        }
+        boxMesh(-5.9, 0.56, 66.6, 4.4, 0.035, 0.035, new T.MeshStandardMaterial({ color: 0x8b7a48, roughness: 0.95 }), 0, false);
+
+        // 石桌两只石凳
+        boxMesh(-19.2, 0, 65.4, 1.0, 0.12, 0.8, stoneMat, 0.3, true, true);
+        boxMesh(-19.2, 0, 65.4, 0.28, 0.66, 0.28, stoneDarkMat, 0, false);
+        boxMesh(-18.0, 0.42, 66.3, 0.42, 0.1, 0.42, stoneDarkMat, 0.2, true, false);
+        boxMesh(-20.4, 0.42, 64.6, 0.42, 0.1, 0.42, stoneDarkMat, -0.3, true, false);
+      })();
     }
-    boxMesh(0, 0, -150, 2.2, 0.34, 2.2, stoneMat, 0.3, true, true);
+
+    /* ---- 区域 2：少年区（小学办公室 + 初中岔路口 + 高中走廊）---- */
+    function buildYouth() {
+      // 围墙
+      wall(50, 0, 50, 21, 1.95, 0.8, { broken: true, seg: 3, gaps: 0.03 });
+      wall(50, 27, 50, 48, 1.92, 0.8, { broken: true, seg: 3, gaps: 0.03 });
+      wall(50, 0, 98, 0, 1.85, 0.8, { broken: true, seg: 3, gaps: 0.03 });
+      wall(98, 0, 98, 48, 1.9, 0.8, { broken: true, seg: 3, gaps: 0.03 });
+      wall(50, 48, 98, 48, 1.88, 0.8, { broken: true, seg: 3, gaps: 0.035 });
+
+      // 小学：一层教学楼，走廊 + 办公室
+      windowWall(54, 40, 71, 40, 3.1, { mat: whiteMat, sill: 0.9, head: 2.3 });
+      windowWall(89, 40, 96, 40, 3.1, { mat: whiteMat, sill: 0.9, head: 2.3 });
+      wall(54, 44.2, 96, 44.2, 3.18, 0.4, { seg: 3.4, gaps: 0.018 });
+      // 办公室
+      wall(71, 40, 71, 48, 2.94, 0.35, { seg: 2.4, gaps: 0.018 });
+      wall(89, 40, 89, 48, 2.94, 0.35, { seg: 2.4, gaps: 0.018 });
+      slab(71, 40, 89, 48, tileMat, 0.05);
+      // 窗台 + 一摞作业本（高处碎片）
+      boxMesh(75, 0, 41.2, 2.5, 1.15, 0.62, whiteMat, 0, true, true);
+      boxMesh(75, 1.15, 41.2, 0.5, 0.34, 0.44, paperMat, 0.05, true, true);
+      boxMesh(75, 1.15, 41.2, 0.46, 0.28, 0.4, paperMat, 0.22, true, true);
+      // 办公桌
+      desk(78.2, 44.4, 2.0, 0.9, 0.76);
+      chair(78.2, 45.6);
+      roof(70.4, 39.6, 89.6, 48.4, 3.22, { beams: 5 });
+      var officeL = new T.PointLight(0xffe0b4, 0.9, 9, 1.8);
+      officeL.position.set(78.5, 2.55, 44.2);
+      root.add(officeL);
+      // 走廊柱子
+      for (var c = 0; c < 5; c++) {
+        boxMesh(56 + c * 3.4, 0, 36.6, 0.32, 3.0, 0.32, whiteMat, 0, true, false);
+      }
+      // 走廊地面
+      slab(54, 36, 96, 44, tileMat, 0.06);
+      roof(53.4, 35.4, 96.6, 44.6, 3.24, { beams: 11 });
+      for (var tl2 = 0; tl2 < 4; tl2++) {
+        var tube2 = new T.Mesh(new T.BoxGeometry(1.5, 0.06, 0.14), new T.MeshStandardMaterial({ color: 0xf4f2e6, emissive: 0xdfe2cf, emissiveIntensity: 1.2, roughness: 0.6 }));
+        tube2.position.set(58 + tl2 * 9, 2.96, 40);
+        root.add(tube2);
+      }
+
+      // 初中：教室 + 课桌
+      wall(54, 20, 76, 20, 2.58, 0.35, { seg: 3, gaps: 0.018 });
+      wall(54, 20, 54, 22.4, 2.58, 0.35, { seg: 2.4, gaps: 0.02 });
+      wall(54, 27.6, 54, 36, 2.58, 0.35, { seg: 2.4, gaps: 0.02 });
+      boxMesh(54, 2.3, 25, 0.42, 0.4, 5.2, stoneDarkMat, 0, false, false);
+      wall(54, 36, 66, 36, 2.54, 0.35, { seg: 3, gaps: 0.025 });
+      wall(66, 36, 76, 36, 2.54, 0.35, { seg: 3, gaps: 0.03 });
+      slab(54, 20, 76, 36, stoneDarkMat, 0.05);
+      for (var r = 0; r < 4; r++) {
+        for (var cc = 0; cc < 2; cc++) {
+          desk(58.5 + cc * 3.2, 23.5 + r * 3.0, 1.05, 0.55, 0.72);
+        }
+      }
+      roof(53.5, 19.6, 76.5, 36.4, 2.74, { beams: 7 });
+      var classL = new T.PointLight(0xdfe8ea, 0.85, 11, 1.8);
+      classL.position.set(64, 2.3, 28);
+      root.add(classL);
+      // 黑板
+      var board = new T.Mesh(new T.PlaneGeometry(5.4, 1.5), new T.MeshStandardMaterial({ color: 0x2b3730, roughness: 0.92 }));
+      board.position.set(63, 1.72, 20.2);
+      root.add(board);
+
+      // 岔路口：电线杆 + 残破广告
+      var pole = new T.Mesh(new T.CylinderGeometry(0.16, 0.22, 7.4, 8), new T.MeshStandardMaterial({ color: 0x6f6a60, roughness: 0.92 }));
+      pole.position.set(86, 3.7, 26);
+      pole.castShadow = true;
+      root.add(pole);
+      addCollider(86, 26, 0.5, 0.5, 0, 7.4, false);
+      for (var ad = 0; ad < 4; ad++) {
+        var pp = new T.Mesh(new T.PlaneGeometry(0.5, 0.66), paperMat);
+        pp.position.set(86 + Math.cos(ad * 1.7) * 0.23, 1.5 + ad * 0.42, 26 + Math.sin(ad * 1.7) * 0.23);
+        pp.rotation.y = ad * 1.7;
+        root.add(pp);
+      }
+      // 岔路的两条土路（用碎石与矮草示意）
+      makeRubble(88, 20, 7, 2.4);
+      makeRubble(92, 32, 6, 2.2);
+      makeTree(94, 38, { h: 8, r: 0.3, branches: 5, depth: 3 });
+
+      // 高中：长走廊，一排落地窗
+      makeWindowBand(54, 2, 96, 2, 3.2, whiteMat);
+      makeWindowBand(54, 12, 96, 12, 2.9, whiteMat);
+      slab(54, 2, 96, 12, tileMat, 0.05);
+      roof(53.4, 1.4, 96.6, 12.6, 3.32, { beams: 11 });
+      for (var tl3 = 0; tl3 < 4; tl3++) {
+        var tube3 = new T.Mesh(new T.BoxGeometry(1.6, 0.06, 0.14), new T.MeshStandardMaterial({ color: 0xf4f2e6, emissive: 0xd6dccb, emissiveIntensity: 1.1, roughness: 0.6 }));
+        tube3.position.set(58 + tl3 * 9.4, 3.18, 7);
+        root.add(tube3);
+      }
+      for (var cc2 = 0; cc2 < 6; cc2++) {
+        boxMesh(56 + cc2 * 7.4, 0, 7, 0.34, 3.0, 0.34, whiteMat, 0, true, false);
+      }
+      // 走廊尽头的大树（窗外）
+      makeTree(99, 7, { h: 10, r: 0.5, branches: 6, depth: 4 });
+      // 地上散落的试卷
+      for (var ex = 0; ex < 8; ex++) {
+        var paper = new T.Mesh(new T.PlaneGeometry(0.32, 0.24), paperMat);
+        paper.rotation.x = -Math.PI / 2;
+        paper.rotation.z = Math.random() * 3;
+        paper.position.set(56 + Math.random() * 36, 0.07, 3 + Math.random() * 8);
+        root.add(paper);
+      }
+    }
+
+    /* ---- 区域 3：亲情与失去区（旧家饭桌 + 医院 + 宿舍 + 巷口）---- */
+    function buildLoss() {
+      wall(22, -40, 38, -40, 1.95, 0.8, { broken: true, seg: 3, gaps: 0.025 });
+      wall(44, -40, 70, -40, 1.95, 0.8, { broken: true, seg: 3, gaps: 0.025 });
+      wall(22, -40, 22, -88, 1.9, 0.8, { broken: true, seg: 3, gaps: 0.03 });
+      wall(70, -40, 70, -88, 1.92, 0.8, { broken: true, seg: 3, gaps: 0.03 });
+      wall(22, -88, 70, -88, 1.88, 0.8, { broken: true, seg: 3, gaps: 0.035 });
+      boxMesh(40, 0, -40.6, 7.0, 0.12, 2.0, stoneDarkMat, 0, true, true);
+
+      // 旧家：饭桌
+      boxMesh(31, 0, -49.5, 1.9, 0.76, 1.1, darkWoodMat, 0, true, true);
+      chair(29.4, -49.5);
+      chair(32.6, -49.5);
+      chair(31, -50.6);
+      chair(31, -48.4);
+      // 两只碗 + 一盘菜
+      [[30.1, -49.5], [32.0, -49.5]].forEach(function (b) {
+        var bowl = new T.Mesh(new T.CylinderGeometry(0.13, 0.09, 0.08, 14, 1, true), ceramicMat);
+        bowl.position.set(b[0], 0.80, b[1]);
+        root.add(bowl);
+      });
+      var dish = new T.Mesh(new T.CylinderGeometry(0.19, 0.17, 0.04, 16), ceramicMat);
+      dish.position.set(31, 0.79, -49.8);
+      root.add(dish);
+      // 屋墙一角
+      wall(25, -55, 36, -55, 2.32, 0.4, { seg: 3, gaps: 0.03 });
+      wall(25, -55, 25, -45, 2.28, 0.4, { seg: 3, gaps: 0.03 });
+      wall(24.6, -44.6, 37.4, -44.6, 2.28, 0.4, { seg: 3, gaps: 0.03 });
+      wall(36, -55, 36, -45, 2.3, 0.4, { seg: 3, gaps: 0.04 });
+      roof(24.4, -55.4, 37.6, -44.4, 2.46, { beams: 4 });
+      var homeL = new T.PointLight(0xffd39a, 0.95, 8, 1.8);
+      homeL.position.set(30.6, 2.2, -49.6);
+      root.add(homeL);
+
+      // 医院长廊
+      slab(46, -52, 60, -78, tileMat, 0.05);
+      wall(46, -52, 46, -78, 2.8, 0.34, { seg: 3, gaps: 0.03 });
+      wall(60, -52, 60, -78, 2.8, 0.34, { seg: 3, gaps: 0.03 });
+      // 病房门（在墙上留口，用门框示意）
+      for (var d3 = 0; d3 < 3; d3++) {
+        var dz = -56 - d3 * 7;
+        boxMesh(46, 0, dz, 0.12, 2.1, 1.1, whiteMat, 0, false, false);
+        var gl = new T.Mesh(new T.PlaneGeometry(0.4, 0.5), new T.MeshStandardMaterial({ color: 0x9fb0a8, transparent: true, opacity: 0.35, roughness: 0.2 }));
+        gl.position.set(46.02, 1.6, dz);
+        gl.rotation.y = Math.PI / 2;
+        root.add(gl);
+      }
+      roof(45.6, -78.2, 60.4, -51.8, 2.96, { beams: 5 });
+      var hallL = new T.PointLight(0xdde6e2, 0.85, 14, 1.6);
+      hallL.position.set(53, 2.5, -64);
+      root.add(hallL);
+      // 走廊尽头：一段带窗洞的端墙
+      wall(46, -78, 51.4, -78, 2.8, 0.34, { seg: 2.6, gaps: 0.02 });
+      wall(55.6, -78, 60, -78, 2.8, 0.34, { seg: 2.6, gaps: 0.02 });
+      boxMesh(53.5, 2.2, -78, 4.4, 0.6, 0.34, whiteMat, 0, false, false);
+      boxMesh(51.4, 0, -78, 0.3, 2.2, 0.4, whiteMat, 0, false, false);
+      boxMesh(55.6, 0, -78, 0.3, 2.2, 0.4, whiteMat, 0, false, false);
+      // 顶灯
+      for (var lt = 0; lt < 4; lt++) {
+        var tube = new T.Mesh(new T.BoxGeometry(1.7, 0.06, 0.16), new T.MeshStandardMaterial({ color: 0xf2f2e8, emissive: 0xd8dcc8, emissiveIntensity: 1.6, roughness: 0.6 }));
+        tube.position.set(53, 2.62, -55 - lt * 6.4);
+        root.add(tube);
+      }
+      // 病房：床 + 床头柜 + 搪瓷碗
+      boxMesh(56.4, 0, -70, 1.1, 0.44, 2.1, whiteMat, 0, true, true);
+      // 床头挡板 / 床尾挡板
+      boxMesh(56.4, 0.44, -71.02, 1.14, 0.52, 0.08, whiteMat, 0, true, false);
+      boxMesh(56.4, 0.44, -68.98, 1.14, 0.30, 0.08, whiteMat, 0, true, false);
+      var quilt2 = new T.Mesh(new T.BoxGeometry(1.02, 0.14, 1.42), new T.MeshStandardMaterial({ color: 0xc3c7cd, roughness: 0.96 }));
+      quilt2.position.set(56.4, 0.54, -69.78);
+      root.add(quilt2);
+      // 叠好的被子一角
+      var fold2 = new T.Mesh(new T.BoxGeometry(1.02, 0.1, 0.34), new T.MeshStandardMaterial({ color: 0xd3d6da, roughness: 0.96 }));
+      fold2.position.set(56.4, 0.60, -69.08);
+      root.add(fold2);
+      var pil2 = new T.Mesh(new T.BoxGeometry(0.66, 0.11, 0.36), new T.MeshStandardMaterial({ color: 0xe4e4dd, roughness: 0.95 }));
+      pil2.position.set(56.4, 0.53, -70.62);
+      root.add(pil2);
+      boxMesh(58.6, 0, -70, 0.6, 0.72, 0.6, whiteMat, 0, true, true);
+      var bowl2 = new T.Mesh(new T.CylinderGeometry(0.15, 0.10, 0.1, 14, 1, true), ceramicMat);
+      bowl2.position.set(58.6, 0.78, -70);
+      root.add(bowl2);
+      // 输液架
+      boxMesh(55.2, 0, -71.4, 0.05, 1.9, 0.05, metalMat, 0, true, false);
+      boxMesh(55.2, 1.9, -71.4, 0.5, 0.04, 0.04, metalMat, 0, false);
+
+      // 大学宿舍
+      wall(24, -72, 33.2, -72, 2.42, 0.32, { seg: 2.6, gaps: 0.02 });
+      wall(35.4, -72, 40, -72, 2.42, 0.32, { seg: 2.6, gaps: 0.02 });
+      boxMesh(33.2, 2.14, -72, 0.24, 2.2, 0.36, stoneDarkMat, 0, false, false);
+      boxMesh(35.4, 2.14, -72, 0.24, 2.2, 0.36, stoneDarkMat, 0, false, false);
+      boxMesh(34.3, 2.14, -72, 2.6, 0.3, 0.36, stoneDarkMat, 0, false, false);
+      wall(24, -72, 24, -86, 2.42, 0.32, { seg: 3, gaps: 0.02 });
+      wall(40, -72, 40, -86, 2.42, 0.32, { seg: 3, gaps: 0.02 });
+      wall(24, -86, 40, -86, 2.38, 0.32, { seg: 3, gaps: 0.02 });
+      slab(24, -72, 40, -86, stoneDarkMat, 0.05);
+      roof(23.6, -86.4, 40.4, -71.6, 2.56, { beams: 5 });
+      makeBunk(27.5, -78, 0);
+      makeBunk(36, -78, 0);
+      desk(31.6, -84, 1.5, 0.7, 0.75);
+      // 桌上的搪瓷杯
+      var cup = new T.Mesh(new T.CylinderGeometry(0.09, 0.08, 0.15, 14, 1, true), ceramicMat);
+      cup.position.set(32.2, 0.82, -84);
+      root.add(cup);
+      // 台灯
+      boxMesh(30.6, 0.75, -84.2, 0.16, 0.3, 0.16, metalMat, 0, false);
+      var lampL = new T.PointLight(0xffd9a4, 0.5, 6, 2);
+      lampL.position.set(30.6, 1.05, -84.2);
+      root.add(lampL);
+
+      // 巷口：地垫 + 狗盆 + 石墩
+      var mat2 = new T.Mesh(new T.PlaneGeometry(1.5, 1.0), new T.MeshStandardMaterial({ color: 0x6b5a48, roughness: 1 }));
+      mat2.rotation.x = -Math.PI / 2;
+      mat2.position.set(64, 0.03, -80.5);
+      root.add(mat2);
+      var dish2 = new T.Mesh(new T.CylinderGeometry(0.24, 0.19, 0.1, 14, 1, true), metalMat);
+      dish2.position.set(65.2, 0.06, -79.4);
+      root.add(dish2);
+      boxMesh(63.2, 0, -78.2, 0.9, 0.5, 0.8, stoneMat, 0.3, true, true);
+      // 草丛
+      for (var gs = 0; gs < 14; gs++) {
+        makeRubble(67 + Math.random() * 2, -81 - Math.random() * 3, 1, 0.5);
+      }
+      makeTree(66, -85, { h: 7, r: 0.28, branches: 4, depth: 3 });
+    }
+
+    /* ---- 区域 4：成年疏离区（餐厅 + 拆迁围挡 + 浴室）---- */
+    function buildAdult() {
+      wall(-70, -40, -58, -40, 1.95, 0.8, { broken: true, seg: 3, gaps: 0.025 });
+      wall(-46, -40, -22, -40, 1.95, 0.8, { broken: true, seg: 3, gaps: 0.025 });
+      wall(-70, -40, -70, -88, 1.9, 0.8, { broken: true, seg: 3, gaps: 0.03 });
+      wall(-22, -40, -22, -88, 1.92, 0.8, { broken: true, seg: 3, gaps: 0.03 });
+      wall(-70, -88, -22, -88, 1.88, 0.8, { broken: true, seg: 3, gaps: 0.035 });
+      boxMesh(-52, 0, -40.6, 7.0, 0.12, 2.0, stoneDarkMat, 0, true, true);
+
+      // 城市餐厅
+      slab(-46, -44, -30, -58, stoneDarkMat, 0.05);
+      wall(-46, -44, -30, -44, 2.62, 0.32, { seg: 3, gaps: 0.02 });
+      makeWindowBand(-46, -58, -30, -58, 3.0, whiteMat);
+      wall(-46, -44, -46, -58, 2.62, 0.32, { seg: 3, gaps: 0.03 });
+      boxMesh(-38, 0, -50, 1.8, 0.75, 1.0, darkWoodMat, 0, true, true);
+      chair(-39.1, -50);
+      chair(-36.9, -50);
+      // 餐盘 + 小票
+      var plate = new T.Mesh(new T.CylinderGeometry(0.2, 0.18, 0.03, 16), ceramicMat);
+      plate.position.set(-38.4, 0.78, -50);
+      root.add(plate);
+      var ticket = new T.Mesh(new T.PlaneGeometry(0.14, 0.24), paperMat);
+      ticket.rotation.x = -Math.PI / 2;
+      ticket.rotation.z = 0.4;
+      ticket.position.set(-37.4, 0.785, -49.7);
+      root.add(ticket);
+      roof(-46.4, -58.4, -29.6, -43.6, 3.14, { beams: 5 });
+      // 吊灯（微弱暖黄）
+      var lampP = new T.PointLight(0xffca86, 0.55, 8, 2);
+      lampP.position.set(-38, 2.3, -51);
+      root.add(lampP);
+      boxMesh(-38, 2.55, -51, 0.06, 0.3, 0.06, metalMat, 0, false);
+
+      // 拆迁围挡：中间留一道缝，露出断根
+      makeFence(-70, -70, -61, -70, 2.7);
+      makeFence(-57, -70, -48, -70, 2.7);
+      // 断掉的老银杏根
+      (function () {
+        var rootMat = new T.MeshStandardMaterial({ color: 0xd8cdb4, roughness: 0.86, metalness: 0 });
+        for (var r2 = 0; r2 < 5; r2++) {
+          var rl = 0.7 + Math.random() * 1.1;
+          var r3 = new T.Mesh(new T.CylinderGeometry(0.10 + Math.random() * 0.1, 0.16, rl, 6), rootMat);
+          r3.position.set(-59.5 + (Math.random() - 0.5) * 1.2, 0.3 + Math.random() * 0.3, -70 + (Math.random() - 0.5) * 0.5);
+          r3.rotation.set(Math.PI / 2 + (Math.random() - 0.5) * 0.7, Math.random() * 3, (Math.random() - 0.5) * 0.6);
+          r3.castShadow = true;
+          root.add(r3);
+        }
+      })();
+      // 碎砖
+      makeRubble(-60.5, -69, 12, 2.2);
+      makeRubble(-58.4, -71.4, 10, 2.0);
+
+      // 出租屋浴室
+      // 6×6 的小卫生间，北墙留一扇门
+      wall(-31, -79, -28.6, -79, 2.4, 0.28, { seg: 2.4, gaps: 0.02 });
+      wall(-27.0, -79, -24.8, -79, 2.4, 0.28, { seg: 2.4, gaps: 0.02 });
+      boxMesh(-28.6, 2.16, -79, 0.22, 2.24, 0.32, whiteMat, 0, false, false);
+      boxMesh(-27.0, 2.16, -79, 0.22, 2.24, 0.32, whiteMat, 0, false, false);
+      boxMesh(-27.8, 2.16, -79, 1.8, 0.28, 0.32, whiteMat, 0, false, false);
+      wall(-31, -79, -31, -85, 2.4, 0.28, { seg: 2.6, gaps: 0.02 });
+      wall(-24.8, -79, -24.8, -85, 2.4, 0.28, { seg: 2.6, gaps: 0.02 });
+      wall(-31, -85, -24.8, -85, 2.4, 0.28, { seg: 2.6, gaps: 0.02 });
+      slab(-31, -79, -24.8, -85, tileMat, 0.05);
+      // 洗手台贴着东墙
+      boxMesh(-25.35, 0, -82.0, 0.5, 0.80, 1.7, whiteMat, 0, true, true);
+      var basin = new T.Mesh(new T.CylinderGeometry(0.26, 0.20, 0.16, 16, 1, true), ceramicMat);
+      basin.position.set(-25.35, 0.86, -82.0);
+      root.add(basin);
+      boxMesh(-25.12, 0.82, -82.0, 0.05, 0.22, 0.05, metalMat, 0, false, false);
+      // 镜子
+      var mirror = new T.Mesh(new T.PlaneGeometry(1.1, 1.0), mirrorMat);
+      mirror.position.set(-25.06, 1.62, -82.0);
+      mirror.rotation.y = -Math.PI / 2;
+      root.add(mirror);
+      // 淋浴
+      boxMesh(-30.5, 0, -84.2, 0.06, 2.1, 0.06, metalMat, 0, true, false);
+      var head = new T.Mesh(new T.CylinderGeometry(0.16, 0.12, 0.05, 12), metalMat);
+      head.position.set(-29.9, 2.05, -84.2);
+      head.rotation.z = 0.5;
+      root.add(head);
+      // 地漏
+      var drain = new T.Mesh(new T.CircleGeometry(0.12, 12), new T.MeshStandardMaterial({ color: 0x6a6a66, roughness: 0.5, metalness: 0.6 }));
+      drain.rotation.x = -Math.PI / 2;
+      drain.position.set(-29.8, 0.056, -83.6);
+      root.add(drain);
+      roof(-31.4, -85.4, -24.4, -78.6, 2.58, { beams: 3 });
+      // 顶光（镜前灯）
+      var bathL = new T.PointLight(0xd8e4e6, 0.6, 6, 2);
+      bathL.position.set(-26.4, 2.2, -82.0);
+      root.add(bathL);
+
+      // 远处不摆高楼：雾密度这么高，任何 60 米外的东西都只剩一块白斑，
+      // 城市感交给围挡、招牌和筒灯去说。
+
+    }
+
+    /* ---- 区域 5：终章区（柜子深处 + 长路）---- */
+    function buildFinal() {
+      wall(-98, 0, -98, 48, 1.62, 0.8, { broken: true, seg: 3, gaps: 0.13 });
+      wall(-98, 0, -50, 0, 1.55, 0.8, { broken: true, seg: 3, gaps: 0.13 });
+      wall(-50, 0, -50, 18, 1.35, 0.8, { broken: true, seg: 3, gaps: 0.1 });
+      wall(-50, 30, -50, 48, 1.3, 0.8, { broken: true, seg: 3, gaps: 0.1 });
+      wall(-98, 48, -50, 48, 1.2, 0.8, { broken: true, seg: 3, gaps: 0.18 });
+
+      // 柜子深处
+      makeCabinet(-86, 34);
+      // 柜子里的暗：一块压暗的地面
+      slab(-89, 32, -83, 37, darkWoodMat, 0.04);
+      // 柜前散落的旧物
+      makeRubble(-84, 30, 8, 2.2);
+
+      // 长路：从入口一路向西，尽头是出口
+      slab(-80, 21.4, -95, 22.6, stoneDarkMat, 0.04);
+      for (var st = 0; st < 22; st++) {
+        var sx = -56 - st * 1.85;
+        boxMesh(sx, 0, 21 + Math.sin(st * 1.3) * 1.5, 0.5, 0.06, 0.42, stoneMat, Math.random(), false);
+      }
+      leafCarpet(-96, 15, -56, 30, 1200, 0.03);
+      // 路边的土坡（可攀）
+      for (var sl = 0; sl < 5; sl++) {
+        var sx2 = -66 - sl * 6.4;
+        boxMesh(sx2, 0, 27 + (sl % 2) * 2, 3.2, 0.55 + sl * 0.12, 2.4, stoneDarkMat, 0.2, true, true);
+      }
+      // 尽头的门：两柱 + 上方一线微光
+      boxMesh(-95.6, 0, 15.6, 0.9, 3.0, 0.9, stoneMat, 0, true, false);
+      boxMesh(-95.6, 0, 26.4, 0.9, 3.0, 0.9, stoneMat, 0, true, false);
+      boxMesh(-95.6, 3.0, 21, 0.9, 0.35, 11.6, stoneMat, 0, false, false);
+      var exitGlow = new T.Sprite(new T.SpriteMaterial({
+        map: glowTexture('rgba(255,250,232,1)', 'rgba(255,236,190,.32)'),
+        transparent: true, blending: T.AdditiveBlending, depthWrite: false, opacity: 0.5
+      }));
+      exitGlow.scale.set(16, 16, 1);
+      exitGlow.position.set(-96.5, 2.2, 21);
+      scene.add(exitGlow);
+
+      // 单向雾门：走到柜子之后合上
+      exitGate = new T.Mesh(new T.PlaneGeometry(7, 4.4), new T.MeshBasicMaterial({
+        map: mistTexture(), transparent: true, opacity: 0, depthWrite: false, side: T.DoubleSide, color: 0xd8d4c6
+      }));
+      exitGate.position.set(-50, 2.2, 24);
+      exitGate.rotation.y = Math.PI / 2;
+      scene.add(exitGate);
+    }
+
+    /* ---- 室内地面压平：石板下面不该钻出起伏的野地 ---- */
+    (function () {
+      if (!groundMesh) return;
+      var pos = groundMesh.geometry.attributes.position;
+      var cz = (WORLD.z0 + WORLD.z1) / 2;
+      var n2 = 0;
+      for (var i = 0; i < pos.count; i++) {
+        var wx = pos.getX(i);
+        var wz = -pos.getY(i) + cz;
+        if (inFloor(wx, wz, 0.5)) { pos.setZ(i, 0.0); n2++; }
+      }
+      pos.needsUpdate = true;
+      groundMesh.geometry.computeVertexNormals();
+    })();
 
     /* ---- 草与地面细节 ---- */
     buildGrass();
@@ -1573,19 +2655,33 @@
   function buildMist() {
     var tex = mistTexture();
     // 少而大、扁平但不"条"：贴地平铺的雾团，视觉上像浮在地面上的云
-    for (var i = 0; i < 22; i++) {
-      var z = 46 - i * 9.4 - Math.random() * 6;
-      var x = pathXAt(z) + (Math.random() - 0.5) * 96;
+    for (var i = 0; i < 30; i++) {
+      var x, z;
+      if (i < 10) {
+        // 枢纽中央的薄雾
+        var a0 = Math.random() * 6.283;
+        var r0 = 6 + Math.random() * 22;
+        x = Math.sin(a0) * r0;
+        z = Math.cos(a0) * r0;
+      } else {
+        // 各区之间的空隙：让每片区域都像被雾隔开
+        var pi = (i - 10) % PLACES.length;
+        var p = PLACES[pi];
+        var cx = (p.x0 + p.x1) / 2, cz = (p.z0 + p.z1) / 2;
+        x = cx + (Math.random() - 0.5) * 52;
+        z = cz + (Math.random() - 0.5) * 52;
+        if (inFloor(x, z, 2)) { x += 6; z += 6; }
+      }
       var mat = new T.SpriteMaterial({
         map: tex, transparent: true, depthWrite: false,
         opacity: 0, color: 0xffffff, fog: true
       });
       var sp = new T.Sprite(mat);
-      var sc = 16 + Math.random() * 24;
+      var sc = 16 + Math.random() * 26;
       sp.scale.set(sc, sc * (0.52 + Math.random() * 0.16), 1);
       sp.position.set(x, 0.35 + Math.random() * 1.5, z);
       sp.material.rotation = (Math.random() - 0.5) * 0.16;
-      sp.userData.base = 0.016 + Math.random() * 0.030;
+      sp.userData.base = 0.018 + Math.random() * 0.032;
       sp.userData.ph = Math.random() * 6.28;
       sp.userData.drift = (Math.random() - 0.5) * 0.55;
       sp.userData.homeX = x;
@@ -1708,26 +2804,21 @@
     var dummy = new T.Object3D();
     var col = new T.Color();
     for (var i = 0; i < GRASS_MAX; i++) {
-      var cz = 50 - Math.random() * 196;
-      // 七成贴近道路，三成铺到远处
-      var side = Math.random() > 0.5 ? 1 : -1;
-      var off = Math.random() < 0.7
-        ? Math.pow(Math.random(), 1.5) * 9
-        : 9 + Math.random() * 26;
-      var cx = pathXAt(cz) + side * (1.9 + off);
-      dummy.position.set(cx, 0, cz);
+      var pt = scatterPoint();
+      dummy.position.set(pt.x, 0, pt.z);
       dummy.rotation.y = Math.random() * Math.PI * 2;
       var sc = 0.75 + Math.random() * 0.7;
       dummy.scale.set(sc, sc * (0.42 + Math.random() * 0.44), sc);
       dummy.updateMatrix();
       grassMesh.setMatrixAt(i, dummy.matrix);
 
-      var warmth = cz > -20 ? 1 : cz > -74 ? 0.5 : 0.15;
+      var ps = placeAt(pt.x, pt.z);
+      var warmth = ps < 0 ? 0.55 : WARMTH[ps];
       col.setRGB(0.42 + warmth * 0.16, 0.45 + warmth * 0.16, 0.31 + warmth * 0.12);
       col.offsetHSL((Math.random() - 0.5) * 0.10, -0.10 + Math.random() * 0.10, (Math.random() - 0.5) * 0.22);
       // 三成草叶偏枯黄：整个场地的绿才不会像一块塑料草坪
       if (Math.random() < 0.32) col.lerp(new T.Color(0.58, 0.51, 0.28), 0.35 + Math.random() * 0.3);
-      if (cz < -74) {
+      if (ps === 2 || ps === 3) {
         var grey = 0.30 + Math.random() * 0.06;
         col.lerp(new T.Color(grey, grey * 0.97, grey * 0.90), 0.55);
       }
@@ -1839,23 +2930,20 @@
     var dummy = new T.Object3D();
     var col = new T.Color();
     for (var i = 0; i < CARD_MAX; i++) {
-      var cz = 52 - Math.random() * 200;
-      var side = Math.random() > 0.5 ? 1 : -1;
-      // 主要铺在离路 0.4 - 15 米：这一段是镜头最常扫过的区域
-      var off = 0.4 + Math.pow(Math.random(), 1.25) * 15;
-      var cx = pathXAt(cz) + side * off;
-      dummy.position.set(cx, 0, cz);
+      var pt = scatterPoint();
+      dummy.position.set(pt.x, 0, pt.z);
       dummy.rotation.y = Math.random() * Math.PI;
       var sc = 0.42 + Math.random() * 0.62;
       dummy.scale.set(sc * (0.85 + Math.random() * 0.4), sc * (0.72 + Math.random() * 0.6), sc);
       dummy.updateMatrix();
       grassCards.setMatrixAt(i, dummy.matrix);
 
-      var warmth = cz > -20 ? 1 : cz > -74 ? 0.5 : 0.15;
+      var ps = placeAt(pt.x, pt.z);
+      var warmth = ps < 0 ? 0.55 : WARMTH[ps];
       col.setRGB(0.44 + warmth * 0.15, 0.47 + warmth * 0.15, 0.32 + warmth * 0.11);
       col.offsetHSL((Math.random() - 0.5) * 0.09, -0.06 + Math.random() * 0.10, (Math.random() - 0.5) * 0.22);
       if (Math.random() < 0.35) col.lerp(new T.Color(0.62, 0.54, 0.30), 0.30 + Math.random() * 0.28);
-      if (cz < -74) {
+      if (ps === 2 || ps === 3) {
         var grey2 = 0.32 + Math.random() * 0.07;
         col.lerp(new T.Color(grey2, grey2 * 0.97, grey2 * 0.90), 0.5);
       }
@@ -1876,12 +2964,9 @@
     var dummy = new T.Object3D();
     var col = new T.Color();
     for (var i = 0; i < N; i++) {
-      var z = 50 - Math.random() * 190;
-      var side = Math.random() > 0.5 ? 1 : -1;
-      var off = Math.pow(Math.random(), 2.3) * 18;
-      var x = pathXAt(z) + side * (1.8 + off);
+      var pt = scatterPoint();
       var s = 0.022 + Math.pow(Math.random(), 2.4) * 0.075;
-      dummy.position.set(x, s * 0.34, z);
+      dummy.position.set(pt.x, s * 0.34, pt.z);
       dummy.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
       dummy.scale.set(s, s * (0.5 + Math.random() * 0.5), s * (0.7 + Math.random() * 0.6));
       dummy.updateMatrix();
@@ -1942,16 +3027,16 @@
 
     // 走廊保护区：这块不放远景树，免得挡路或穿模
     function blocked(x, z) {
-      return Math.abs(x) < 48 && z < 62 && z > -216;
+      return x > -118 && x < 118 && z > -108 && z < 124;
     }
 
     var placed = 0, guard = 0;
-    while (placed < 96 && guard < 4000) {
+    while (placed < 108 && guard < 5000) {
       guard++;
-      var lx = (Math.random() * 2 - 1) * 290;
-      var lz = -74 + (Math.random() * 2 - 1) * 235;
-      var rr = Math.sqrt(lx * lx + (lz + 74) * (lz + 74));
-      if (rr < 58 || rr > 320) continue;
+      var lx = (Math.random() * 2 - 1) * 300;
+      var lz = 8 + (Math.random() * 2 - 1) * 260;
+      var rr = Math.sqrt(lx * lx + (lz - 8) * (lz - 8));
+      if (rr < 124 || rr > 330) continue;
       if (blocked(lx, lz)) continue;
       // 越远越高，远看才有层次
       var hh = 6.5 + rr / 42 + Math.random() * 5;
@@ -1980,10 +3065,11 @@
     var col2 = new T.Color();
     var n = 0;
     for (var i2 = 0; i2 < N * 4 && n < N; i2++) {
-      var sx = (Math.random() * 2 - 1) * 150;
-      var sz = 58 - Math.random() * 290;
-      if (blocked(sx, sz) && Math.abs(sx) < 26) continue;
-      if (sz < -126) continue;
+      var sa = Math.random() * 6.283;
+      var sr = 136 + Math.pow(Math.random(), 1.5) * 110;
+      var sx = Math.sin(sa) * sr;
+      var sz = 8 + Math.cos(sa) * sr;
+      if (placeAt(sx, sz) >= 0) continue;
       var s2 = 0.34 + Math.pow(Math.random(), 2.0) * 1.05;
       dummy.position.set(sx, s2 * 0.26, sz);
       dummy.rotation.set((Math.random() - 0.5) * 0.3, Math.random() * 6.28, (Math.random() - 0.5) * 0.3);
@@ -2003,48 +3089,96 @@
     scene.add(farScrub);
   }
 
-  function pathXAt(z) {    // 与贴图路径近似的解析函数
-    var t = (56 - z) / 220;
-    return Math.sin(t * 9.2) * 1.6 + Math.cos(t * 4.1) * 0.9;
+  function inFloor(x, z, m) {
+    m = m == null ? 0 : m;
+    for (var i = 0; i < FLOORS.length; i++) {
+      var f = FLOORS[i];
+      if (x > f[0] - m && x < f[2] + m && z > f[1] - m && z < f[3] + m) return true;
+    }
+    return false;
   }
 
+  // 某点属于哪片区域（含外扩的氛围带）：返回 stage，枢纽返回 -1
+  function placeAt(x, z) {
+    var best = -1, bestD = 1e9;
+    for (var i = 0; i < PLACES.length; i++) {
+      var p = PLACES[i];
+      if (x > p.x0 && x < p.x1 && z > p.z0 && z < p.z1) return p.stage;
+      var cx = (p.x0 + p.x1) / 2, cz = (p.z0 + p.z1) / 2;
+      var d = Math.max(Math.abs(x - cx) - (p.x1 - p.x0) / 2, Math.abs(z - cz) - (p.z1 - p.z0) / 2);
+      if (d < bestD) { bestD = d; best = p.stage; }
+    }
+    return bestD < 14 ? best : -1;
+  }
+
+  var WARMTH = [1.0, 0.55, 0.22, 0.16, 0.85];
+
+  function scatterPoint() {
+    for (var t = 0; t < 14; t++) {
+      var x = WORLD.x0 + 5 + Math.random() * (WORLD.x1 - WORLD.x0 - 10);
+      var z = WORLD.z0 + 5 + Math.random() * (WORLD.z1 - WORLD.z0 - 10);
+      if (inFloor(x, z, 0.9)) continue;
+      return { x: x, z: z };
+    }
+    return { x: 0, z: 0 };
+  }
+  
   /* ---------------- 更新 & 阶段 ---------------- */
 
-  W.setStage = function (s, instant) {
-    stageNow = s;
-    var col, den, top, mid, bot, sunK, sunPos, sunColor;
-    // 天球底部的颜色直接取雾色：地平线两侧同色，才不会有硬色阶
-    if (s === 0) {
-      col = 0xcdc4b2; den = 0.0105;
-      top = 0x8ea6ba; mid = 0xd8d1c1; bot = col; sunK = 1.05;
-      sunPos = new T.Vector3(0.36, 0.17, -1).normalize(); sunColor = 0xfff0d0;
-    } else if (s === 1) {
-      col = 0xa4a29a; den = 0.040;
-      top = 0x76838d; mid = 0x9d9d98; bot = col; sunK = 0.34;
-      sunPos = new T.Vector3(0.3, 0.22, -1).normalize(); sunColor = 0xefe6d2;
-    } else if (s === 2) {
-      col = 0x6a6660; den = 0.060;
-      top = 0x41454b; mid = 0x575651; bot = col; sunK = 0.18;
-      sunPos = new T.Vector3(0.2, 0.3, -1).normalize(); sunColor = 0xb2aea4;
-    } else {
-      // 结局草地
-      col = 0xd6d2c6; den = 0.012;
-      top = 0x9fb2c0; mid = 0xdedbd0; bot = col; sunK = 1.25;
-      sunPos = new T.Vector3(0.4, 0.2, -1).normalize(); sunColor = 0xfff2d6;
+  // 0-4：五片回忆区；5：中央荒原；6：结局草地
+  var PAL = [
+    { // 童年：午后的暖光
+      col: 0xd3c8b0, den: 0.0078, top: 0x93a9bc, mid: 0xdbd2be, sunK: 1.45,
+      sunDir: [-0.46, 0.58, -0.68], sunColor: 0xffeccb,
+      grade: { exposure: 0.74, bloom: 0.14, threshold: 1.10, saturation: 1.06, contrast: 1.20, warmth: 0.090, shafts: 0.30, vignette: 0.80, grain: 0.019, clouds: 1.0 }
+    },
+    { // 少年：中性自然光，慢慢变冷
+      col: 0xb2aea4, den: 0.030, top: 0x8b97a0, mid: 0xc4bdad, sunK: 0.85,
+      sunDir: [0.52, 0.52, -0.68], sunColor: 0xffeeda,
+      grade: { exposure: 0.72, bloom: 0.15, threshold: 1.06, saturation: 0.90, contrast: 1.24, warmth: 0.014, shafts: 0.18, vignette: 0.86, grain: 0.025, clouds: 0.72 }
+    },
+    { // 亲情与失去：冷白、雾气重
+      col: 0x9fa4a4, den: 0.046, top: 0x77838c, mid: 0xa8aeae, sunK: 0.42,
+      sunDir: [-0.44, 0.56, -0.70], sunColor: 0xe8ece8,
+      grade: { exposure: 0.76, bloom: 0.16, threshold: 1.05, saturation: 0.76, contrast: 1.26, warmth: -0.020, shafts: 0.08, vignette: 0.90, grain: 0.026, clouds: 0.35 }
+    },
+    { // 成年：低照度蓝灰
+      col: 0x7d8388, den: 0.042, top: 0x4e5a66, mid: 0x767d82, sunK: 0.26,
+      sunDir: [0.48, 0.54, -0.69], sunColor: 0xc8cfd4,
+      grade: { exposure: 0.82, bloom: 0.17, threshold: 1.02, saturation: 0.68, contrast: 1.28, warmth: -0.034, shafts: 0.03, vignette: 0.92, grain: 0.028, clouds: 0.18 }
+    },
+    { // 终章：淡金漫射
+      col: 0xd8d0bc, den: 0.0095, top: 0x9fb2c0, mid: 0xe2dccd, sunK: 1.35,
+      sunDir: [-0.40, 0.52, -0.75], sunColor: 0xfff2d6,
+      grade: { exposure: 0.76, bloom: 0.20, threshold: 1.14, saturation: 1.04, contrast: 1.16, warmth: 0.052, shafts: 0.30, vignette: 0.70, grain: 0.017, clouds: 0.8 }
+    },
+    { // 中央荒原：中性柔光
+      col: 0xbfb9ab, den: 0.026, top: 0x84939f, mid: 0xc7c1b4, sunK: 1.0,
+      sunDir: [0.32, 0.16, -1], sunColor: 0xfff0da,
+      grade: { exposure: 0.72, bloom: 0.15, threshold: 1.09, saturation: 0.92, contrast: 1.24, warmth: 0.016, shafts: 0.24, vignette: 0.86, grain: 0.023, clouds: 0.85 }
+    },
+    { // 结局草地
+      col: 0xd6d2c6, den: 0.010, top: 0x9fb2c0, mid: 0xdedbd0, sunK: 1.3,
+      sunDir: [0.4, 0.2, -1], sunColor: 0xfff2d6,
+      grade: { exposure: 0.80, bloom: 0.20, threshold: 1.16, saturation: 1.12, contrast: 1.14, warmth: 0.060, shafts: 0.30, vignette: 0.68, grain: 0.016, clouds: 0.85 }
     }
+  ];
+  var PAL_HEMI = [0.62, 0.54, 0.58, 0.60, 0.48, 0.46, 0.38];
+  var PAL_SUN = [2.10, 1.55, 1.05, 0.85, 2.00, 1.70, 1.70];
+  var PAL_SPRITE = [0.5, 0.30, 0.20, 0.12, 0.46, 0.36, 0.5];
+
+  W.setStage = function (s, instant) {
+    s = Math.max(0, Math.min(6, s | 0));
+    stageNow = s;
+    var p = PAL[s] || PAL[5];
+    var col = p.col, den = p.den, top = p.top, mid = p.mid, bot = col, sunK = p.sunK;
+    var sunPos = new T.Vector3(p.sunDir[0], p.sunDir[1], p.sunDir[2]).normalize();
+    var sunColor = p.sunColor;
+
     fogTarget.color = new T.Color(col);
     fogTarget.density = den;
+    gradeTarget = p.grade;
 
-    // 各段的调色与光学参数
-    if (s === 0) {
-      gradeTarget = { exposure: 0.42, bloom: 0.13, threshold: 1.08, saturation: 1.02, contrast: 1.30, warmth: 0.050, shafts: 0.26, vignette: 0.86, grain: 0.020, clouds: 1.0 };
-    } else if (s === 1) {
-      gradeTarget = { exposure: 0.52, bloom: 0.16, threshold: 1.06, saturation: 0.82, contrast: 1.28, warmth: 0.006, shafts: 0.20, vignette: 0.92, grain: 0.028, clouds: 0.55 };
-    } else if (s === 2) {
-      gradeTarget = { exposure: 0.58, bloom: 0.16, threshold: 1.02, saturation: 0.58, contrast: 1.30, warmth: -0.030, shafts: 0.04, vignette: 0.95, grain: 0.030, clouds: 0.22 };
-    } else {
-      gradeTarget = { exposure: 0.80, bloom: 0.20, threshold: 1.16, saturation: 1.12, contrast: 1.14, warmth: 0.060, shafts: 0.30, vignette: 0.68, grain: 0.016, clouds: 0.85 };
-    }
     if (instant && YH.Post) {
       var pp = YH.Post.params;
       pp.exposure = gradeTarget.exposure;
@@ -2067,20 +3201,21 @@
       skyMat.uniforms.sunColor.value.set(sunColor);
     }
     if (sunSprite) {
-      sunSprite.material.opacity = s === 2 ? 0.10 : s === 1 ? 0.24 : 0.5;
+      sunSprite.material.opacity = PAL_SPRITE[s];
       sunSprite.position.copy(sunPos).multiplyScalar(300);
     }
     if (instant) {
       fog.color.copy(fogTarget.color);
       fog.density = fogTarget.density;
     }
-    if (hemiLight) hemiLight.intensity = [0.36, 0.34, 0.50, 0.38][s] || 0.30;
+    if (hemiLight) hemiLight.intensity = PAL_HEMI[s];
     if (W.sun) {
-      W.sun.intensity = [1.30, 0.86, 0.62, 1.70][s] || 1.2;
+      W.sun.intensity = PAL_SUN[s];
       W.sun.color.set(sunColor);
     }
+    sunDirCur.copy(sunPos);
 
-    // 环境球：每次换段重建一次
+    // 环境球：每次换区重建一次
     W.refreshEnv(top, mid, bot, sunColor, sunK);
 
     // 雾团色调跟随
@@ -2111,6 +3246,29 @@
     }
     for (var li = 0; li < fragLights.length; li++) {
       fragLights[li].intensity = 0.7 + Math.sin(clockT * 1.3) * 0.15;
+    }
+
+    // 蒸汽：从灶台与蒸笼里升起来
+    for (var si = 0; si < steams.length; si++) {
+      var sw = steams[si], su = sw.userData;
+      var sph = (clockT * su.sp + su.ph) % 1;
+      sw.position.y = su.y0 + sph * 2.6;
+      sw.position.x = su.x + Math.sin(clockT * 0.55 + su.ph * 6.28) * 0.28 * sph;
+      var ssc = su.sc * (0.55 + sph * 1.9);
+      sw.scale.set(1.45 * ssc, 1.85 * ssc, 1);
+      sw.material.opacity = (1 - sph) * 0.20 * Math.min(1, sph * 5.5);
+    }
+
+    // 走到柜子之后：身后的雾门合上，不能再回头
+    if (exitGate && camera) {
+      if (!exitClosed && camera.position.x < -73 && camera.position.z > 0 && camera.position.z < 48) {
+        exitClosed = true;
+        exitGate.userData.target = 0.5;
+        addCollider(-50, 24, 0.5, 7.4, 0, 4.4, false);
+        if (YH.Audio && YH.Audio.closeIn) YH.Audio.closeIn();
+      }
+      var gt = exitGate.userData.target || 0;
+      exitGate.material.opacity += (gt - exitGate.material.opacity) * Math.min(1, dt * 1.2);
     }
 
     // 云漂移
@@ -2189,18 +3347,43 @@
 
     // 阴影跟随
     if (W.sun && camera) {
-      W.sun.position.set(camera.position.x + 42, 40, camera.position.z + 22);
+      W.sun.position.set(
+        camera.position.x + sunDirCur.x * 78,
+        sunDirCur.y * 78,
+        camera.position.z + sunDirCur.z * 78
+      );
       W.sun.target.position.set(camera.position.x, 0, camera.position.z);
       W.sun.target.updateMatrixWorld();
     }
   };
 
-  W.stageOf = function (z) {
-    if (z > -20.4) return 0;
-    if (z > -74.2) return 1;
-    if (z > -130.4) return 2;
-    return 3;
+  // 区域判定：矩形内就是该区，矩形外 10 米算“还没走进去”的引道，仍用该区的雾
+  W.stageAt = function (x, z) {
+    var best = 5, bd = 1e9;
+    for (var i = 0; i < PLACES.length; i++) {
+      var p = PLACES[i];
+      var dx = Math.max(p.x0 - x, 0, x - p.x1);
+      var dz = Math.max(p.z0 - z, 0, z - p.z1);
+      var d = Math.sqrt(dx * dx + dz * dz);
+      if (d <= 0.5) return p.stage;
+      if (d < bd) { bd = d; best = p.stage; }
+    }
+    return bd < 4 ? best : 5;
   };
+
+  W.placeName = function (x, z) {
+    for (var i = 0; i < PLACES.length; i++) {
+      var p = PLACES[i];
+      if (x > p.x0 - 2 && x < p.x1 + 2 && z > p.z0 - 2 && z < p.z1 + 2) return p.name;
+    }
+    return '回忆荒原';
+  };
+
+  W.endReached = function (x, z) {
+    return x < -92.5 && z > 13 && z < 29;
+  };
+
+  W.exitClosed = function () { return exitClosed; };
 
   W.fogNow = function () { return fog.density; };
   W.dbg = function () {
@@ -2215,6 +3398,7 @@
   };
   W.sunPos = function () { return sunSprite ? sunSprite.position : null; };
   W.FRAG_DEFS = FRAG_DEFS;
+  W.PLACES = PLACES;
   W.fragments = fragments;
   W.colliders = colliders;
   W.scene = function () { return scene; };

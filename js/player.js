@@ -235,8 +235,8 @@
     var nz = this.pos.z + move.z;
 
     // 世界边界
-    nx = Math.max(-104, Math.min(104, nx));
-    nz = Math.max(-172, Math.min(54, nz));
+    nx = Math.max(-110, Math.min(110, nx));
+    nz = Math.max(-98, Math.min(114, nz));
 
     var res = this.resolve(nx, nz, this.pos.y);
     this.pos.x = res.x;
